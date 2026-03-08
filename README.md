@@ -469,6 +469,8 @@ The next time the bot starts, `/tldr` appears in Telegram's autocomplete alongsi
 
 **How it works:** On startup, ClaudeClaw scans `~/.claude/skills/` for folders containing a `SKILL.md` with valid YAML frontmatter. If `user_invocable: true` is set, the skill's `name` and `description` are registered with Telegram's `setMyCommands` API alongside the built-in commands. Telegram allows up to 100 commands total.
 
+**Important:** Telegram aggressively caches the command menu on mobile. After installing a new skill and restarting the bot, you may need to fully close Telegram (swipe it away from your app switcher, not just minimize) and reopen it before the new `/` commands appear.
+
 Any `/command` not in the built-in list (like `/todo`, `/gmail`, `/tldr`) passes through to Claude and routes to whatever matching skill you have installed.
 
 ### /newchat + /respin workflow
