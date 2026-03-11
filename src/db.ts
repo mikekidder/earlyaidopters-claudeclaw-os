@@ -376,11 +376,23 @@ export function getAllScheduledTasks(agentId?: string): ScheduledTask[] {
     .all() as ScheduledTask[];
 }
 
-export function markTaskRunning(id: string): void {
+/**
+ * Mark a task as running and optionally advance its next_run to the next
+ * scheduled occurrence. Advancing next_run immediately prevents the scheduler
+ * from re-firing the same task on subsequent ticks while it is still executing
+ * (double-fire bug), and survives process restarts since the value is persisted.
+ */
+export function markTaskRunning(id: string, tentativeNextRun?: number): void {
   const now = Math.floor(Date.now() / 1000);
-  db.prepare(
-    `UPDATE scheduled_tasks SET status = 'running', started_at = ? WHERE id = ?`,
-  ).run(now, id);
+  if (tentativeNextRun !== undefined) {
+    db.prepare(
+      `UPDATE scheduled_tasks SET status = 'running', started_at = ?, next_run = ? WHERE id = ?`,
+    ).run(now, tentativeNextRun, id);
+  } else {
+    db.prepare(
+      `UPDATE scheduled_tasks SET status = 'running', started_at = ? WHERE id = ?`,
+    ).run(now, id);
+  }
 }
 
 export function updateTaskAfterRun(

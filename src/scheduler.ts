@@ -21,6 +21,12 @@ const TASK_TIMEOUT_MS = 10 * 60 * 1000; // 10 minutes
 let sender: Sender;
 
 /**
+ * In-memory set of task IDs currently being executed.
+ * Acts as a fast-path guard alongside the DB-level lock in markTaskRunning.
+ */
+const runningTaskIds = new Set<string>();
+
+/**
  * Initialise the scheduler. Call once after the Telegram bot is ready.
  * @param send  Function that sends a message to the user's Telegram chat.
  */
@@ -50,10 +56,19 @@ async function runDueTasks(): Promise<void> {
   logger.info({ count: tasks.length }, 'Running due scheduled tasks');
 
   for (const task of tasks) {
-    logger.info({ taskId: task.id, prompt: task.prompt.slice(0, 60) }, 'Firing task');
+    // In-memory guard: skip if already running in this process
+    if (runningTaskIds.has(task.id)) {
+      logger.warn({ taskId: task.id }, 'Task already running, skipping duplicate fire');
+      continue;
+    }
 
-    // Mark as running BEFORE execution to prevent double-fire
-    markTaskRunning(task.id);
+    // Compute next occurrence BEFORE executing so we can lock the task
+    // in the DB immediately, preventing re-fire on subsequent ticks.
+    const nextRun = computeNextRun(task.schedule);
+    runningTaskIds.add(task.id);
+    markTaskRunning(task.id, nextRun);
+
+    logger.info({ taskId: task.id, prompt: task.prompt.slice(0, 60) }, 'Firing task');
 
     const abortController = new AbortController();
     const timeout = setTimeout(() => abortController.abort(), TASK_TIMEOUT_MS);
@@ -66,8 +81,7 @@ async function runDueTasks(): Promise<void> {
       clearTimeout(timeout);
 
       if (result.aborted) {
-        // Task was killed by timeout
-        const nextRun = computeNextRun(task.schedule);
+        // Task was killed by timeout — nextRun already computed above
         updateTaskAfterRun(task.id, nextRun, 'Timed out after 10 minutes', 'timeout');
         await sender(`⏱ Task timed out after 10m: "${task.prompt.slice(0, 60)}..." — killed.`);
         logger.warn({ taskId: task.id }, 'Task timed out');
@@ -84,13 +98,11 @@ async function runDueTasks(): Promise<void> {
         logConversationTurn(ALLOWED_CHAT_ID, 'assistant', text, activeSession ?? undefined, schedulerAgentId);
       }
 
-      const nextRun = computeNextRun(task.schedule);
       updateTaskAfterRun(task.id, nextRun, text, 'success');
 
       logger.info({ taskId: task.id, nextRun }, 'Task complete, next run scheduled');
     } catch (err) {
       clearTimeout(timeout);
-      const nextRun = computeNextRun(task.schedule);
       const errMsg = err instanceof Error ? err.message : String(err);
       updateTaskAfterRun(task.id, nextRun, errMsg.slice(0, 500), 'failed');
 
@@ -100,6 +112,8 @@ async function runDueTasks(): Promise<void> {
       } catch {
         // ignore send failure
       }
+    } finally {
+      runningTaskIds.delete(task.id);
     }
   }
 }
