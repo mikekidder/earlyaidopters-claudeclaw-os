@@ -524,14 +524,26 @@ By default, this web page only works on the same computer running the bot. If yo
 
 ### What you'll see
 
+At the top of the dashboard, a **summary stats bar** gives you an at-a-glance overview:
+
+| Stat | What it shows |
+|------|---------------|
+| **Messages** | Total conversation turns today across all agents |
+| **Agents** | How many agents are currently running vs. configured |
+| **Cost Today** | Total API spend for the day |
+| **Memories** | Total memories stored in the system |
+
+Below that, the dashboard is organized into panels:
+
 | Panel | What it shows you |
 |-------|-------------------|
+| **Hive Mind** | A real-time activity feed showing what each agent has been doing, with timestamps and color-coded agent names. The summary column wraps naturally so you can read full entries without horizontal scrolling. |
 | **Scheduled Tasks** | Every task you've set up. Shows whether it's running or paused, when it will run next (with a live countdown), and what happened last time it ran. Tap to expand details. Pause, resume, or delete tasks directly from the dashboard. |
-| **Memory Landscape** | How many things your assistant remembers, broken down by type. Tap the numbers to browse individual memories. Shows which memories are fading (used less often) and which ones come up the most. Includes a chart of how many new memories were created over the past month. |
+| **Memory Landscape** | How many things your assistant remembers, broken down by type. Tap the numbers to browse individual memories in a slide-up drawer. Two highlight sections: **Fading Soon** (memories about to be forgotten, salience < 0.5) and **Recently Retrieved** (semantic memories the bot actually pulled up in recent conversations). Click any memory item to expand and read the full content. Each section has a "Browse all" link to open the full memory drawer. Includes a salience distribution chart and a 30-day memory creation timeline. |
 | **System Health** | A visual meter showing how full the conversation window is (green = plenty of room, yellow = getting full, red = almost out). Also shows how long the current session has been running, whether Telegram, WhatsApp and Slack are connected, and the bot's username. |
 | **Tokens & Cost** | How much you've spent today and all-time. A chart showing daily costs over the past month. A donut chart showing how efficiently the system is using cached data (higher = cheaper). |
 
-The dashboard also has a **live chat overlay** — a floating chat button that opens a real-time conversation panel. You can send messages to Claude directly from the dashboard and see responses stream in via SSE (Server-Sent Events). It shows tool progress in real time (e.g. "Reading file", "Running command") and has a stop button to abort queries mid-execution. Messages sent from the dashboard are also relayed to your Telegram chat.
+The dashboard also has a **live chat overlay**: a floating chat button that opens a real-time conversation panel. You can send messages to Claude directly from the dashboard and see responses stream in via SSE (Server-Sent Events). It shows tool progress in real time (e.g. "Reading file", "Running command") and has a stop button to abort queries mid-execution. Messages sent from the dashboard are also relayed to your Telegram chat.
 
 On your phone it's a single scrollable page. On a computer it splits into two columns automatically.
 
@@ -1610,10 +1622,11 @@ node dist/schedule-cli.js list --agent comms
 
 ### The dashboard with agents
 
-When agents are configured, the dashboard adds two panels at the top:
+When agents are configured, the dashboard adds panels at the top:
 
-- **Agent Status Cards** -- shows each agent with a color-coded status (live/offline), model, today's turns and cost
-- **Hive Mind Feed** -- timestamped cross-agent activity, color-coded by agent
+- **Summary Stats Bar** -- messages today, active agents count, today's cost, total memories
+- **Agent Status Cards** -- each agent with a color-coded status (live/offline), model, today's turns and cost
+- **Hive Mind Feed** -- timestamped cross-agent activity table, color-coded by agent, with full summary text that wraps cleanly
 
 All existing dashboard panels (tasks, memory, health, tokens, chat) continue to work as before.
 
