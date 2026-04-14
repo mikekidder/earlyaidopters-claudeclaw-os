@@ -1166,6 +1166,86 @@ The sections that matter most:
 
 ---
 
+## Building your context stack
+
+ClaudeClaw gets more useful the more context you give it. Each layer compounds on the last. Your CLAUDE.md is the foundation, skills add capabilities, and your file system becomes the knowledge base. The more you invest in these layers, the less you explain per message and the more your agents can do autonomously.
+
+Here's how to think about it if you're a business owner:
+
+### Layer 1: CLAUDE.md (who you are)
+
+This is the base. Every session loads it. Tell Claude about your business, your role, your tools, your preferences. Open Claude Code in your terminal and try:
+
+```
+Update my CLAUDE.md with this context:
+- I run [your business]. We sell [products/services].
+- My team is [size], mostly in [locations/timezones].
+- I use [tools: Stripe, Notion, Slack, etc.] daily.
+- When I say "check revenue" I mean Stripe + Gumroad combined.
+- My writing style: [direct, casual, formal, etc.].
+- Never [thing you hate in AI output].
+```
+
+### Layer 2: File system (what you know)
+
+Claude can read any file on your machine. Organize key business docs where agents can find them:
+
+```
+Create a ~/Business folder structure for my ClaudeClaw agents:
+- ~/Business/SOPs/ for standard operating procedures
+- ~/Business/Templates/ for email templates, proposals, contracts
+- ~/Business/Clients/ for client briefs and notes
+- ~/Business/Products/ for pricing, feature lists, positioning docs
+
+Then update my CLAUDE.md to reference these paths so agents
+know where to look without being told.
+```
+
+If you use Obsidian, point your vault path in CLAUDE.md and agents will search it automatically.
+
+### Layer 3: Skills (what you can do)
+
+Each skill you install is a new capability every agent inherits. Start with the basics and add more as you need them:
+
+```
+Install these skills into ~/.claude/skills/:
+- gmail (email triage, drafting, sending)
+- google-calendar (scheduling, availability checks)
+- agent-browser (web research, form filling, scraping)
+
+Then test: send "check my email" to your bot on Telegram.
+```
+
+The skill catalog is at [github.com/anthropics/claude-code/tree/main/skills](https://github.com/anthropics/claude-code/tree/main/skills). Community skills work too. Anything in `~/.claude/skills/` auto-loads for every agent.
+
+### Layer 4: Agents (who does what)
+
+Once you have context and skills, specialist agents multiply your throughput:
+
+| Agent | Handles | You stop doing |
+|-------|---------|---------------|
+| comms | Email triage, Slack replies, DM responses | Inbox scanning |
+| research | Market research, competitor tracking, trend reports | Manual googling |
+| content | Drafts, social posts, scripts | First-draft writing |
+| ops | Calendar, billing, task management | Admin work |
+
+Each agent gets its own 1M context window, its own CLAUDE.md personality, and access to every skill you've installed.
+
+### The compounding effect
+
+Each layer makes the others more powerful:
+
+- **CLAUDE.md** alone: Claude knows who you are but can't do much
+- **+ Files**: Claude can reference your SOPs, templates, and client notes
+- **+ Skills**: Claude can send emails, check your calendar, browse the web
+- **+ Agents**: Four specialists working in parallel, each with full context
+- **+ Scheduled tasks**: Agents running autonomously on a cron (daily email triage, weekly reports)
+- **+ Memory**: Every interaction teaches the system. It remembers client preferences, project history, your patterns
+
+You don't need everything on day one. Start with CLAUDE.md and one skill. Add layers as you feel the gaps.
+
+---
+
 ## Customizing the ASCII art
 
 The startup banner is in `banner.txt` at the project root. Replace it with anything or leave it empty. It's read fresh on every start.
