@@ -1708,7 +1708,7 @@ for agent in main comms ops content research; do
 done
 
 # Remove all agents (stop everything)
-bash scripts/uninstall-launchd.sh
+npm run uninstall
 ```
 
 **How the plist files work:** Each agent has a `.plist` file in the `launchd/` directory that tells macOS how to run it. These are XML config files that specify the command, working directory, environment variables, and log paths. You shouldn't need to edit them unless you're adding a custom agent -- the install script handles everything.
@@ -1916,6 +1916,19 @@ curl -X POST "https://api.telegram.org/bot<TOKEN>/setMyProfilePhoto" \
 ### Resource usage
 
 5 Node.js processes (main + 4 agents) use ~500MB RAM total at idle. Each `runAgent()` call spawns a separate Claude Code subprocess that exits when done. SQLite WAL mode handles concurrent access from all processes with no contention.
+
+---
+
+## Uninstalling
+
+To completely remove ClaudeClaw OS (services, config, database, temp files):
+
+```bash
+npm run uninstall
+cd .. && rm -rf claudeclaw-os
+```
+
+This stops all background services, removes `~/.claudeclaw`, clears the SQLite database and session data, and wipes temp files. The final `rm -rf` deletes the repo itself.
 
 ---
 
