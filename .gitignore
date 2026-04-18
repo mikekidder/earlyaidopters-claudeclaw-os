@@ -55,6 +55,9 @@ warroom/music.mp3
 warroom/avatars/backup-*/
 warroom/avatars/photoreal-backup/
 
+# PM2 ecosystem — contains local paths, generated per-machine
+ecosystem.config.cjs
+
 # Personal config — lives in CLAUDECLAW_CONFIG (default ~/.claudeclaw)
 CLAUDE.md
 agents/*/agent.yaml
