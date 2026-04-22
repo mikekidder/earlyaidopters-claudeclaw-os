@@ -5,7 +5,7 @@ import { serve } from '@hono/node-server';
 
 import fs from 'fs';
 import path from 'path';
-import { AGENT_ID, ALLOWED_CHAT_ID, DASHBOARD_PORT, DASHBOARD_TOKEN, PROJECT_ROOT, STORE_DIR, WHATSAPP_ENABLED, SLACK_USER_TOKEN, CONTEXT_LIMIT, agentDefaultModel } from './config.js';
+import { AGENT_ID, ALLOWED_CHAT_ID, DASHBOARD_PORT, DASHBOARD_TOKEN, MESSENGER_TYPE, PROJECT_ROOT, STORE_DIR, WHATSAPP_ENABLED, SLACK_USER_TOKEN, CONTEXT_LIMIT, agentDefaultModel } from './config.js';
 import crypto from 'crypto';
 import {
   getAllScheduledTasks,
@@ -984,6 +984,9 @@ export function startDashboard(botApi?: Api<RawApi>): void {
       compactions,
       sessionAge,
       model: agentDefaultModel || 'sonnet-4-6',
+      messengerType: MESSENGER_TYPE,
+      messengerConnected: getTelegramConnected(),
+      // Back-compat alias — pre-Signal clients still read telegramConnected.
       telegramConnected: getTelegramConnected(),
       waConnected: WHATSAPP_ENABLED,
       slackConnected: !!SLACK_USER_TOKEN,

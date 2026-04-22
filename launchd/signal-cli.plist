@@ -6,7 +6,7 @@
   <string>com.mindfield.signal-cli</string>
   <key>ProgramArguments</key>
   <array>
-    <string>/opt/homebrew/bin/signal-cli</string>
+    <string>__SIGNAL_CLI_PATH__</string>
     <string>-a</string>
     <string>__SIGNAL_PHONE_NUMBER__</string>
     <string>daemon</string>

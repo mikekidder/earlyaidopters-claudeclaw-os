@@ -96,11 +96,17 @@ push endpoint and streams `receive` notifications to whoever connects to
 its TCP socket. We run it under `launchd` so it survives reboots and
 restarts on crash.
 
-Copy the template plist and substitute your phone number:
+Copy the template plist and substitute your phone number + the
+signal-cli binary path. On Apple Silicon, `which signal-cli` resolves
+to `/opt/homebrew/bin/signal-cli`. On Intel Macs it's usually
+`/usr/local/bin/signal-cli`, and on Linux it depends on how you
+installed it. The plist can't rely on `PATH`, so substitute the
+absolute path at install time:
 
 ```bash
 # In the claudeclaw-os checkout:
-sed "s|__SIGNAL_PHONE_NUMBER__|+491234567890|g; s|__HOME__|$HOME|g" \
+SIGNAL_CLI_PATH=$(which signal-cli)
+sed "s|__SIGNAL_PHONE_NUMBER__|+491234567890|g; s|__HOME__|$HOME|g; s|__SIGNAL_CLI_PATH__|$SIGNAL_CLI_PATH|g" \
     launchd/signal-cli.plist > ~/Library/LaunchAgents/com.mindfield.signal-cli.plist
 
 launchctl load ~/Library/LaunchAgents/com.mindfield.signal-cli.plist
