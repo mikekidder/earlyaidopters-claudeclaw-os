@@ -235,7 +235,7 @@ ${WARROOM_ENABLED ? `<div class="card" style="border:1px solid #1e3a5f">
   <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px">
     <div>
       <div style="font-size:14px;font-weight:600;color:#a5b4fc">War Room Voices</div>
-      <div style="font-size:11px;color:#6b7280;margin-top:2px">Per-agent Gemini Live voice config. Main keeps Charon unless you change it.</div>
+      <div style="font-size:11px;color:#6b7280;margin-top:2px">Per-agent Gemini Live voice config. The primary agent defaults to Charon unless you change it.</div>
     </div>
     <div style="display:flex;gap:8px">
       <button id="voicesSaveBtn" onclick="saveVoices()" disabled style="background:#374151;color:#9ca3af;border:none;border-radius:6px;padding:5px 12px;font-size:12px;font-weight:600;cursor:not-allowed">Save</button>
@@ -1160,7 +1160,7 @@ function renderVoices() {
       : '';
     return (
       '<div style="display:flex;align-items:center;gap:10px;padding:8px 10px;background:rgba(255,255,255,0.02);border:1px solid ' + borderColor + ';border-radius:6px">' +
-        '<div style="width:80px;font-size:12px;font-weight:600;color:#d1d5db;text-transform:uppercase;letter-spacing:0.5px">' + r.agent + defaultBadge + dirtyBadge + '</div>' +
+        '<div style="width:80px;font-size:12px;font-weight:600;color:#d1d5db;text-transform:uppercase;letter-spacing:0.5px">' + (r.display_name || r.agent) + defaultBadge + dirtyBadge + '</div>' +
         '<select data-agent="' + r.agent + '" onchange="onVoiceChange(this)" style="flex:1;max-width:280px;background:#0f172a;color:#e5e7eb;border:1px solid #1e293b;border-radius:4px;padding:4px 8px;font-size:12px;font-family:inherit">' + opts + '</select>' +
         '<div style="flex:1;min-width:0;font-size:10px;color:#6b7280;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' + (r.name || '') + '</div>' +
       '</div>'

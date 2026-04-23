@@ -527,7 +527,47 @@ async function main() {
   }
   const effectiveClaudeMd = fs.existsSync(claudeMdDest) ? claudeMdDest : legacyClaudeMd;
 
-  // ── 6b. CLAUDE.md personalization ────────────────────────────────────────
+  // ── 6b. Main agent identity (agent.yaml) ───────────────────────────────
+  const mainYamlDest = path.join(mainAgentDir, 'agent.yaml');
+  if (fs.existsSync(mainYamlDest)) {
+    ok(`agent.yaml exists at ${mainYamlDest}`);
+  } else {
+    fs.mkdirSync(mainAgentDir, { recursive: true });
+    console.log();
+    info('Your main bot can have a display name shown on the dashboard and in chats.');
+    const mainName = await ask('Name for your main agent (Enter for "Main")') || 'Main';
+    const mainDesc = await ask('Short description (Enter to skip)') || '';
+
+    const yamlLines = [
+      '# Main agent configuration',
+      `name: ${mainName}`,
+    ];
+    if (mainDesc) {
+      yamlLines.push(`description: ${mainDesc}`);
+    }
+    yamlLines.push('');
+    yamlLines.push('# The main agent uses TELEGRAM_BOT_TOKEN from .env (no override needed).');
+    yamlLines.push('# telegram_bot_token_env: TELEGRAM_BOT_TOKEN');
+    yamlLines.push('');
+    yamlLines.push('# Default model. Options: claude-opus-4-6, claude-sonnet-4-6, claude-haiku-4-5');
+    yamlLines.push('# Users can override per-chat with /model in Telegram.');
+    yamlLines.push('model: claude-sonnet-4-6');
+    yamlLines.push('');
+    yamlLines.push('# Obsidian integration (optional).');
+    yamlLines.push('# obsidian:');
+    yamlLines.push('#   vault: /path/to/your/obsidian/vault');
+    yamlLines.push('#   folders:');
+    yamlLines.push('#     - FolderA/');
+    yamlLines.push('');
+
+    fs.writeFileSync(mainYamlDest, yamlLines.join('\n'), 'utf-8');
+    ok(`Created agent.yaml for main agent → ${mainYamlDest}`);
+    if (mainName !== 'Main') {
+      info(`Dashboard and chats will show "${mainName}" instead of "Main".`);
+    }
+  }
+
+  // ── 6c. CLAUDE.md personalization ──────────────────────────────────────
   section('Personalize your assistant (CLAUDE.md)');
 
   info('CLAUDE.md is the personality and context file loaded into every session.');

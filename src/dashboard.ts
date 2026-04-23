@@ -524,8 +524,17 @@ export function startDashboard(botApi?: Api<RawApi>): void {
         usedGeminiVoices.add(geminiVoice);
         isDefault = true;
       }
+      // Resolve display name from agent.yaml (falls back to capitalised id)
+      let displayName: string;
+      try {
+        const cfg = loadAgentConfig(agent);
+        displayName = cfg.name || agent.charAt(0).toUpperCase() + agent.slice(1);
+      } catch {
+        displayName = agent.charAt(0).toUpperCase() + agent.slice(1);
+      }
       return {
         agent,
+        display_name: displayName,
         gemini_voice: geminiVoice,
         voice_id: entry.voice_id || '',
         name: entry.name || '',
