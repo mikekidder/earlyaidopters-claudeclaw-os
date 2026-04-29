@@ -573,22 +573,47 @@ async function main() {
   info('CLAUDE.md is the personality and context file loaded into every session.');
   info('It defines who your assistant is, what you do, and how it communicates.');
   console.log();
-  info('At minimum, replace the [BRACKETED] placeholders:');
-  bullet('[YOUR ASSISTANT NAME]  — what you want to call the bot');
-  bullet('[YOUR NAME]            — your name (so it knows who it\'s talking to)');
-  bullet('[YOUR_OBSIDIAN_VAULT]  — path to your Obsidian vault, if you use one');
+
+  // Read the agent name from the yaml we just created (or an existing one)
+  let assistantName = 'Main';
+  try {
+    const yamlText = fs.readFileSync(path.join(mainAgentDir, 'agent.yaml'), 'utf-8');
+    const nameMatch = yamlText.match(/^name:\s*(.+)$/m);
+    if (nameMatch) assistantName = nameMatch[1].trim();
+  } catch { /* use default */ }
+
+  const ownerName = await ask('Your name (so the bot knows who it\'s talking to)') || '';
+
+  // Replace placeholders in CLAUDE.md if we have values
+  if (fs.existsSync(effectiveClaudeMd)) {
+    let claudeContent = fs.readFileSync(effectiveClaudeMd, 'utf-8');
+    let replaced = false;
+    if (assistantName && assistantName !== 'Main' && claudeContent.includes('[YOUR ASSISTANT NAME]')) {
+      claudeContent = claudeContent.replace(/\[YOUR ASSISTANT NAME\]/g, assistantName);
+      replaced = true;
+    }
+    if (ownerName && claudeContent.includes('[YOUR NAME]')) {
+      claudeContent = claudeContent.replace(/\[YOUR NAME\]/g, ownerName);
+      replaced = true;
+    }
+    if (replaced) {
+      fs.writeFileSync(effectiveClaudeMd, claudeContent, 'utf-8');
+      ok('Updated CLAUDE.md with your names');
+    }
+  }
+
   console.log();
-  info('The more context you add, the better it performs without explaining things');
-  info('in every message. Think of it as a system prompt that persists everywhere.');
+  info('You can further personalize CLAUDE.md at any time. Useful things to add:');
+  bullet('Your projects and work context');
+  bullet('Communication preferences');
+  bullet('Obsidian vault path (if you use one)');
   console.log();
   console.log(`  ${c.bold}Your CLAUDE.md is here:${c.reset}`);
   console.log();
   console.log(`  ${c.cyan}${effectiveClaudeMd}${c.reset}`);
   console.log();
-  info('You can edit it in any text editor, or just start the bot and ask');
-  info('Claude to update your CLAUDE.md for you. It has full access to the file.');
-  console.log();
-  info('The bot works fine with the defaults. Personalize it whenever you\'re ready.');
+  info('Edit it in any text editor, or just ask the bot via Telegram to');
+  info('update it for you. It has full access to the file.');
 
   // ── 7. Skills to install ─────────────────────────────────────────────────
   section('Skills you might want');
