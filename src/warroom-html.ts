@@ -804,6 +804,14 @@ const CHAT_ID = ${jsChatId};
 const WARROOM_PORT = ${warroomPort};
 const API_BASE = window.location.origin;
 
+// The dashboard /ws/warroom proxy enforces the same DASHBOARD_TOKEN gate
+// Hono uses for HTTP routes. The WS upgrade path can't read Authorization
+// headers cleanly across browsers, so we pass the token as a query param.
+function buildWsUrl() {
+  return (window.location.protocol === 'https:' ? 'wss://' : 'ws://')
+    + window.location.host + '/ws/warroom?token=' + encodeURIComponent(TOKEN);
+}
+
 let meetingActive = false;
 var currentMeetingId = null;
 var transcriptEntryCount = 0;
@@ -1013,6 +1021,7 @@ async function setMode(mode, el) {
 // so the reconnect sequence doesn't drift between the two.
 async function reloadMeetingAfterRespawn(statusLabel, targetAgent) {
   switching = true;
+  armSwitchingFailsafe(25000);
   try {
     if (pipecatClient) {
       try { await pipecatClient.disconnect(); } catch(e){}
@@ -1049,10 +1058,11 @@ async function reloadMeetingAfterRespawn(statusLabel, targetAgent) {
       btn.textContent = 'Start Meeting';
       btn.className = 'btn start';
       btn.disabled = false;
+      clearSwitchingFailsafe();
       return;
     }
 
-    var wsUrl = (window.location.protocol === 'https:' ? 'wss://' : 'ws://') + window.location.host + '/ws/warroom';
+    var wsUrl = buildWsUrl();
     var WebSocketTransport = window.PipecatWarRoom.WebSocketTransport;
     var PipecatClient = window.PipecatWarRoom.PipecatClient;
     currentTransport = new WebSocketTransport({ wsUrl: wsUrl });
@@ -1067,10 +1077,11 @@ async function reloadMeetingAfterRespawn(statusLabel, targetAgent) {
           document.getElementById('statusText').textContent = 'meeting active (' + statusLabel + ')';
           addTranscriptEntry('system', statusLabel + ' is ready. Speak now.');
           startWaveform();
+          clearSwitchingFailsafe();
         },
         onDisconnected: function() {
           if (currentTransport) { try { forceCloseTransport(currentTransport); } catch(e){} currentTransport = null; }
-          switching = false;
+          clearSwitchingFailsafe();
           stopWaveform();
           meetingActive = false;
           document.getElementById('statusText').textContent = 'disconnected';
@@ -1094,8 +1105,9 @@ async function reloadMeetingAfterRespawn(statusLabel, targetAgent) {
       },
     });
     pipecatClient.connect({ wsUrl: wsUrl }).catch(function(){});
-  } finally {
-    switching = false;
+  } catch (err) {
+    clearSwitchingFailsafe();
+    throw err;
   }
 }
 
@@ -1115,8 +1127,35 @@ function handleServerMessage(msg) {
     // on version. Accept both.
     var data = msg.data || msg;
     if (!data || typeof data !== 'object') return;
-    if (data.event !== 'agent_selected') return;
+    var ev = data.event;
     var agent = data.agent;
+
+    // Server tells us to clear the hand-up animation. Fires when an answer
+    // actually completes OR when answer_as_agent fails/times out, so the
+    // user is never staring at a stuck hand-up indicator.
+    if (ev === 'hand_down') {
+      if (handUpTimer) { clearTimeout(handUpTimer); handUpTimer = null; }
+      if (agent) {
+        var c = document.getElementById('agent-' + agent);
+        if (c) c.classList.remove('hand-up');
+      } else {
+        document.querySelectorAll('.agent-card').forEach(function(c) { c.classList.remove('hand-up'); });
+      }
+      return;
+    }
+
+    // Server tells us a sub-agent call failed. Surface a visible system
+    // entry so the user knows the bot didn't silently swallow the question.
+    // Without this, OAuth expiry / bridge errors / timeouts produced only
+    // a vague Gemini mumble.
+    if (ev === 'agent_error') {
+      var label = (AGENT_LABELS[agent] || agent || 'Agent');
+      var errMsg = (typeof data.error === 'string' && data.error) ? data.error : 'unknown error';
+      addTranscriptEntry('system', label + ' failed: ' + errMsg);
+      return;
+    }
+
+    if (ev !== 'agent_selected') return;
     if (!agent) return;
     var card = document.getElementById('agent-' + agent);
     if (!card) return;
@@ -1283,8 +1322,34 @@ var AGENT_LABELS = { main: 'Main', research: 'Research', comms: 'Comms', content
 // reconnect cycles.
 var switching = false;
 
+// Failsafe to release the switching guard if onConnected/onDisconnected
+// never fires after a reconnect. Without this a stalled reconnect would
+// pin the guard on indefinitely and block all further agent switches.
+var switchingTimeoutHandle = null;
+function armSwitchingFailsafe(ms) {
+  if (switchingTimeoutHandle) clearTimeout(switchingTimeoutHandle);
+  switchingTimeoutHandle = setTimeout(function() {
+    switchingTimeoutHandle = null;
+    if (switching) {
+      console.warn('[WarRoom] switching failsafe fired, clearing guard');
+      switching = false;
+    }
+  }, ms);
+}
+function clearSwitchingFailsafe() {
+  if (switchingTimeoutHandle) { clearTimeout(switchingTimeoutHandle); switchingTimeoutHandle = null; }
+  switching = false;
+}
+
 async function togglePin(agentId) {
   if (switching) return;
+  // Claim the guard up front so a rapid second click cannot race through
+  // while the HTTP pin request is in flight. Previously we only flipped
+  // switching=true AFTER the HTTP call returned and after deciding to
+  // reconnect, so two fast clicks both made it past the opening guard
+  // and both spawned their own reconnect path.
+  switching = true;
+  armSwitchingFailsafe(25000);
   try {
     var targetAgent;
     if (pinnedAgent === agentId && agentId !== 'main') {
@@ -1313,6 +1378,7 @@ async function togglePin(agentId) {
     if (!data || !data.ok) {
       addTranscriptEntry('system', 'Switch failed: ' + (data && data.error));
       document.getElementById('statusText').textContent = 'ready';
+      clearSwitchingFailsafe();
       return;
     }
 
@@ -1322,6 +1388,7 @@ async function togglePin(agentId) {
     if (!meetingActive) {
       addTranscriptEntry('system', 'Active agent set to ' + statusLabel + '. Click Start Meeting to talk.');
       document.getElementById('statusText').textContent = 'ready';
+      clearSwitchingFailsafe();
       return;
     }
 
@@ -1329,108 +1396,108 @@ async function togglePin(agentId) {
     // the waveform, wait for the warroom subprocess to respawn on the
     // server side (main's auto-respawn logic in src/index.ts takes about
     // 1 second), then reconnect with the same flow as Start Meeting.
-    switching = true;
-    try {
-      if (pipecatClient) {
-        try { await pipecatClient.disconnect(); } catch(e){}
-        pipecatClient = null;
-      }
-      if (currentTransport) {
-        try { forceCloseTransport(currentTransport); } catch(e){}
-        currentTransport = null;
-      }
-      stopWaveform();
-      // Hold the meeting UI in "switching" state so toggleMeeting doesn't
-      // think we ended. We keep meetingActive=true but disable the mic btn.
-      document.getElementById('micBtn').disabled = true;
-      document.getElementById('micBtn').classList.remove('recording');
-
-      // Wait for the warroom server to come back up. Probe /api/warroom/start
-      // (cheap endpoint that just returns the ws url) as a heartbeat for
-      // the whole stack being healthy.
-      var ready = false;
-      var waited = 0;
-      while (!ready && waited < 15000) {
-        await new Promise(function(r){ setTimeout(r, 500); });
-        waited += 500;
-        try {
-          var probe = await fetch(API_BASE + '/api/warroom/start?token=' + TOKEN, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ chatId: CHAT_ID, mode: currentMode }),
-          });
-          var pdata = await probe.json();
-          if (pdata && pdata.ok) ready = true;
-        } catch(e){}
-      }
-      if (!ready) {
-        addTranscriptEntry('system', 'Switch timed out. Click Start Meeting to retry.');
-        document.getElementById('statusText').textContent = 'disconnected';
-        meetingActive = false;
-        var btn = document.getElementById('meetingBtn');
-        btn.textContent = 'Start Meeting';
-        btn.className = 'btn start';
-        btn.disabled = false;
-        return;
-      }
-
-      // 5. Reconnect a fresh Pipecat client to the respawned server
-      var wsUrl = (window.location.protocol === 'https:' ? 'wss://' : 'ws://') + window.location.host + '/ws/warroom';
-      var WebSocketTransport = window.PipecatWarRoom.WebSocketTransport;
-      var PipecatClient = window.PipecatWarRoom.PipecatClient;
-      currentTransport = new WebSocketTransport({ wsUrl: wsUrl });
-      pipecatClient = new PipecatClient({
-        transport: currentTransport,
-        enableMic: true,
-        enableCam: false,
-        callbacks: {
-          onConnected: function() {
-            console.log('[WarRoom] Reconnected to Pipecat server as', statusLabel);
-            document.getElementById('micBtn').disabled = false;
-            document.getElementById('micBtn').classList.add('recording');
-            document.getElementById('statusText').textContent = 'meeting active (' + statusLabel + ')';
-            addTranscriptEntry('system', statusLabel + ' is ready. Speak now.');
-            startWaveform();
-          },
-          onDisconnected: function() {
-            console.log('[WarRoom] Disconnected after switch');
-            if (currentTransport) { try { forceCloseTransport(currentTransport); } catch(e){} currentTransport = null; }
-            switching = false;
-            stopWaveform();
-            meetingActive = false;
-            document.getElementById('statusText').textContent = 'disconnected';
-            addTranscriptEntry('system', 'Connection lost. Click Start Meeting to reconnect.');
-            var btn = document.getElementById('meetingBtn');
-            btn.textContent = 'Start Meeting'; btn.className = 'btn start'; btn.disabled = false;
-            document.getElementById('micBtn').disabled = true;
-          },
-          onBotReady: function() { console.log('[WarRoom] Bot ready after switch'); },
-          onUserTranscript: function(d) {
-            if (d && d.final) addTranscriptEntry('You', d.text);
-          },
-          onBotTranscript: function(d) {
-            if (d) addTranscriptEntry(statusLabel, d.text || '', targetAgent || 'main');
-          },
-          onServerMessage: function(msg) { handleServerMessage(msg); },
-          onError: function(err) {
-            console.error('[WarRoom] Post-switch error:', err);
-            var msg = formatErr(err);
-            if (msg && msg.length < 200) {
-              addTranscriptEntry('system', 'Error: ' + msg);
-            }
-          },
-        },
-      });
-      pipecatClient.connect({ wsUrl: wsUrl }).catch(function(err) {
-        console.log('[WarRoom] reconnect connect() resolved:', err && err.message);
-      });
-    } finally {
-      switching = false;
+    if (pipecatClient) {
+      try { await pipecatClient.disconnect(); } catch(e){}
+      pipecatClient = null;
     }
+    if (currentTransport) {
+      try { forceCloseTransport(currentTransport); } catch(e){}
+      currentTransport = null;
+    }
+    stopWaveform();
+    // Hold the meeting UI in "switching" state so toggleMeeting doesn't
+    // think we ended. We keep meetingActive=true but disable the mic btn.
+    document.getElementById('micBtn').disabled = true;
+    document.getElementById('micBtn').classList.remove('recording');
+
+    // Wait for the warroom server to come back up. Probe /api/warroom/start
+    // (cheap endpoint that just returns the ws url) as a heartbeat for
+    // the whole stack being healthy.
+    var ready = false;
+    var waited = 0;
+    while (!ready && waited < 15000) {
+      await new Promise(function(r){ setTimeout(r, 500); });
+      waited += 500;
+      try {
+        var probe = await fetch(API_BASE + '/api/warroom/start?token=' + TOKEN, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ chatId: CHAT_ID, mode: currentMode }),
+        });
+        var pdata = await probe.json();
+        if (pdata && pdata.ok) ready = true;
+      } catch(e){}
+    }
+    if (!ready) {
+      addTranscriptEntry('system', 'Switch timed out. Click Start Meeting to retry.');
+      document.getElementById('statusText').textContent = 'disconnected';
+      meetingActive = false;
+      var btn = document.getElementById('meetingBtn');
+      btn.textContent = 'Start Meeting';
+      btn.className = 'btn start';
+      btn.disabled = false;
+      clearSwitchingFailsafe();
+      return;
+    }
+
+    // 5. Reconnect a fresh Pipecat client to the respawned server.
+    // Hold the switching guard until onConnected or onDisconnected
+    // fires (whichever happens first). Clearing it right after the
+    // sync connect() call lets a rapid second click race through.
+    var wsUrl = buildWsUrl();
+    var WebSocketTransport = window.PipecatWarRoom.WebSocketTransport;
+    var PipecatClient = window.PipecatWarRoom.PipecatClient;
+    currentTransport = new WebSocketTransport({ wsUrl: wsUrl });
+    pipecatClient = new PipecatClient({
+      transport: currentTransport,
+      enableMic: true,
+      enableCam: false,
+      callbacks: {
+        onConnected: function() {
+          console.log('[WarRoom] Reconnected to Pipecat server as', statusLabel);
+          document.getElementById('micBtn').disabled = false;
+          document.getElementById('micBtn').classList.add('recording');
+          document.getElementById('statusText').textContent = 'meeting active (' + statusLabel + ')';
+          addTranscriptEntry('system', statusLabel + ' is ready. Speak now.');
+          startWaveform();
+          clearSwitchingFailsafe();
+        },
+        onDisconnected: function() {
+          console.log('[WarRoom] Disconnected after switch');
+          if (currentTransport) { try { forceCloseTransport(currentTransport); } catch(e){} currentTransport = null; }
+          clearSwitchingFailsafe();
+          stopWaveform();
+          meetingActive = false;
+          document.getElementById('statusText').textContent = 'disconnected';
+          addTranscriptEntry('system', 'Connection lost. Click Start Meeting to reconnect.');
+          var btn = document.getElementById('meetingBtn');
+          btn.textContent = 'Start Meeting'; btn.className = 'btn start'; btn.disabled = false;
+          document.getElementById('micBtn').disabled = true;
+        },
+        onBotReady: function() { console.log('[WarRoom] Bot ready after switch'); },
+        onUserTranscript: function(d) {
+          if (d && d.final) addTranscriptEntry('You', d.text);
+        },
+        onBotTranscript: function(d) {
+          if (d) addTranscriptEntry(statusLabel, d.text || '', targetAgent || 'main');
+        },
+        onServerMessage: function(msg) { handleServerMessage(msg); },
+        onError: function(err) {
+          console.error('[WarRoom] Post-switch error:', err);
+          var msg = formatErr(err);
+          if (msg && msg.length < 200) {
+            addTranscriptEntry('system', 'Error: ' + msg);
+          }
+        },
+      },
+    });
+    pipecatClient.connect({ wsUrl: wsUrl }).catch(function(err) {
+      console.log('[WarRoom] reconnect connect() resolved:', err && err.message);
+    });
   } catch (err) {
     console.error('[WarRoom] togglePin failed', err);
     addTranscriptEntry('system', 'Pin error: ' + (err && err.message || err));
-    switching = false;
+    clearSwitchingFailsafe();
   }
 }
 
@@ -1444,55 +1511,75 @@ var AGENT_ROLES = {
 };
 var AGENT_LABELS = AGENT_LABELS || {};
 
-// Load agent cards dynamically from the API
-(async function loadAgentCards(){
-  try {
-    var r = await fetch(API_BASE + '/api/warroom/agents?token=' + TOKEN);
-    var data = await r.json();
-    if (data && data.agents) {
+// HTML-escape user-controlled strings before injecting into innerHTML.
+// Agent name/description come from agent.yaml files which the dashboard
+// lets users create and edit, so they are effectively user input.
+function escapeHtmlClient(s) {
+  return String(s == null ? '' : s)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+// Load agent cards dynamically from the API. Returns a Promise so the
+// initial-pin loader can chain off it and call _renderPin AFTER cards
+// exist in the DOM.
+function loadAgentCards() {
+  return fetch(API_BASE + '/api/warroom/agents?token=' + TOKEN)
+    .then(function(r){ return r.json(); })
+    .then(function(data) {
+      if (!data || !data.agents) return;
       var container = document.getElementById('agent-cards-container');
       if (!container) return;
       container.innerHTML = '';
       data.agents.forEach(function(agent) {
         var role = AGENT_ROLES[agent.id] || agent.description || 'Specialist';
-        AGENT_LABELS[agent.id] = agent.name || agent.id;
+        var displayName = agent.name || agent.id;
+        AGENT_LABELS[agent.id] = displayName;
+        var safeName = escapeHtmlClient(displayName);
+        var safeRole = escapeHtmlClient(role);
+        var safeAgentIdAttr = escapeHtmlClient(agent.id);
         var card = document.createElement('div');
         card.className = 'agent-card';
         card.id = 'agent-' + agent.id;
         card.setAttribute('data-agent', agent.id);
         card.onclick = function(){ togglePin(agent.id); };
-        card.innerHTML = '<div class="agent-avatar"><img src="/warroom-avatar/' + encodeURIComponent(agent.id) + '?token=' + encodeURIComponent(TOKEN) + '" alt="' + (agent.name || agent.id) + '" style="width:100%;height:100%;object-fit:cover;border-radius:50%" onerror="this.style.display=\\'none\\'"></div>'
-          + '<div class="agent-info"><div class="agent-name">' + (agent.name || agent.id) + '</div><div class="agent-role">' + role + '</div></div>'
-          + '<div class="agent-indicator" id="status-' + agent.id + '"></div>';
+        card.innerHTML = '<div class="agent-avatar"><img src="/warroom-avatar/' + encodeURIComponent(agent.id) + '?token=' + encodeURIComponent(TOKEN) + '" alt="' + safeName + '" style="width:100%;height:100%;object-fit:cover;border-radius:50%" onerror="this.style.display=\\'none\\'"></div>'
+          + '<div class="agent-info"><div class="agent-name">' + safeName + '</div><div class="agent-role">' + safeRole + '</div></div>'
+          + '<div class="agent-indicator" id="status-' + safeAgentIdAttr + '"></div>';
         // Fade in
         setTimeout(function(){ card.style.opacity = '1'; card.style.transform = 'translateX(0)'; }, 50);
         container.appendChild(card);
       });
-    }
-  } catch(e) { console.error('[WarRoom] Failed to load agents:', e); }
-})();
+    })
+    .catch(function(e){ console.error('[WarRoom] Failed to load agents:', e); });
+}
 
-// Load the initial pin state on page load so the UI reflects server state
-(async function loadInitialPin(){
-  try {
-    var r = await fetch(API_BASE + '/api/warroom/pin?token=' + TOKEN);
-    var j = await r.json();
-    if (j && j.agent) {
-      pinnedAgent = j.agent;
-      _renderPin();
+// Load the initial pin state on page load so the UI reflects server state.
+// Runs AFTER loadAgentCards() resolves so _renderPin has cards in the DOM
+// to mark. When these ran in parallel, a slow agents API + fast pin API
+// left the pinned agent visually unmarked until the user clicked something.
+loadAgentCards().then(function() {
+  return fetch(API_BASE + '/api/warroom/pin?token=' + TOKEN);
+}).then(function(r){ return r && r.json(); }).then(function(j) {
+  if (!j) return;
+  if (j.agent) {
+    pinnedAgent = j.agent;
+    _renderPin();
+  }
+  if (j.mode && (j.mode === 'direct' || j.mode === 'auto')) {
+    currentMode = j.mode;
+    document.querySelectorAll('.mode-btn').forEach(function(b){ b.classList.remove('active'); });
+    var btn = document.getElementById('mode-' + j.mode);
+    if (btn) btn.classList.add('active');
+    var hint = document.getElementById('mode-hint');
+    if (hint && j.mode === 'auto') {
+      hint.textContent = 'Hand Up: the team listens, best-fit answers. No need to name an agent.';
     }
-    if (j && j.mode && (j.mode === 'direct' || j.mode === 'auto')) {
-      currentMode = j.mode;
-      document.querySelectorAll('.mode-btn').forEach(function(b){ b.classList.remove('active'); });
-      var btn = document.getElementById('mode-' + j.mode);
-      if (btn) btn.classList.add('active');
-      var hint = document.getElementById('mode-hint');
-      if (hint && j.mode === 'auto') {
-        hint.textContent = 'Hand Up: the team listens, best-fit answers. No need to name an agent.';
-      }
-    }
-  } catch(e){}
-})();
+  }
+}).catch(function(){});
 
 // Warmup socket removed: the /api/warroom/start endpoint now does a real
 // WebSocket health probe, so the browser only connects once the server is
@@ -1647,7 +1734,7 @@ async function toggleMeeting() {
         return;
       }
 
-      var wsUrl = data.ws_url || ((window.location.protocol === 'https:' ? 'wss://' : 'ws://') + window.location.host + '/ws/warroom');
+      var wsUrl = data.ws_url || buildWsUrl();
 
       // Create the Pipecat client with WebSocket transport
       var WebSocketTransport = window.PipecatWarRoom.WebSocketTransport;
@@ -1721,7 +1808,7 @@ async function toggleMeeting() {
               console.log('[WarRoom] Disconnected');
               if (!meetingActive) return;
               // Clear switching guard in case disconnect happened during a pin/mode switch
-              switching = false;
+              clearSwitchingFailsafe();
               // Force-close the transport so the server frees the client slot
               if (currentTransport) { try { forceCloseTransport(currentTransport); } catch(e){} currentTransport = null; }
               stopWaveform();
@@ -1734,6 +1821,7 @@ async function toggleMeeting() {
                 try {
                   var WebSocketTransport = window.PipecatWarRoom.WebSocketTransport;
                   var PipecatClient = window.PipecatWarRoom.PipecatClient;
+                  wsUrl = buildWsUrl();
                   currentTransport = new WebSocketTransport({ wsUrl: wsUrl });
                   pipecatClient = new PipecatClient({
                     transport: currentTransport,
@@ -1873,6 +1961,19 @@ async function toggleMeeting() {
           btn.disabled = false;
           // Belt-and-braces: if anything started the waveform early, stop it
           stopWaveform();
+          // Tear down the half-open client + transport so the next Start
+          // Meeting click gets a clean Pipecat slot. Without this the
+          // stalled client keeps holding "the one allowed client" on the
+          // server side and subsequent clicks fail the same way.
+          try { pipecatClient.disconnect(); } catch (e) {}
+          pipecatClient = null;
+          if (currentTransport) {
+            try { forceCloseTransport(currentTransport); } catch (e) {}
+            currentTransport = null;
+          }
+          micActive = false;
+          document.getElementById('micBtn').disabled = true;
+          document.getElementById('micBtn').classList.remove('recording');
         }
       }, 20000);
 

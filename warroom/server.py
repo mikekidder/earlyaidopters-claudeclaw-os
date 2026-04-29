@@ -47,6 +47,7 @@ import json
 import logging
 import os
 import shutil
+import signal
 import subprocess
 from pathlib import Path
 
@@ -196,21 +197,51 @@ ANSWER_TIMEOUT_SEC = float(os.environ.get("WARROOM_ANSWER_TIMEOUT", "25"))
 
 
 async def _run_subprocess(cmd: list[str], timeout: float = 20.0) -> tuple[int, str, str]:
-    """Run a subprocess with timeout. Returns (exit_code, stdout, stderr)."""
+    """Run a subprocess with timeout. Returns (exit_code, stdout, stderr).
+
+    Runs the child in its own process group via ``start_new_session`` so a
+    timeout kill terminates the whole group. Without this, timing out an
+    agent-voice-bridge wrapper leaves the nested Claude Code process (and
+    whatever tools it spawned) running in the background and producing
+    spurious work after the voice turn has already failed.
+    """
     proc = await asyncio.create_subprocess_exec(
         *cmd,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
         cwd=str(PROJECT_ROOT),
+        start_new_session=True,
     )
     try:
         stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
     except asyncio.TimeoutError:
+        pgid = None
         try:
-            proc.kill()
-            await proc.wait()
-        except Exception:
+            pgid = os.getpgid(proc.pid)
+        except (ProcessLookupError, OSError):
             pass
+        if pgid is not None:
+            try:
+                os.killpg(pgid, signal.SIGTERM)
+            except (ProcessLookupError, OSError):
+                pass
+            try:
+                await asyncio.wait_for(proc.wait(), timeout=2.0)
+            except asyncio.TimeoutError:
+                try:
+                    os.killpg(pgid, signal.SIGKILL)
+                except (ProcessLookupError, OSError):
+                    pass
+                try:
+                    await proc.wait()
+                except Exception:
+                    pass
+        else:
+            try:
+                proc.kill()
+                await proc.wait()
+            except Exception:
+                pass
         return -1, "", "timeout"
     return proc.returncode or 0, stdout.decode(errors="replace").strip(), stderr.decode(errors="replace").strip()
 
@@ -353,20 +384,26 @@ async def answer_as_agent_handler(params):
         }, properties=silent)
         return
 
+    # Helper: push a server-message envelope to the browser. RTVI observer
+    # wraps it for the Pipecat JS client's onServerMessage callback.
+    # Best-effort — if the pipeline is mid-teardown the push can fail; the
+    # failure is non-fatal because the user-visible state is recoverable on
+    # the next interaction.
+    async def _push_event(payload: dict) -> None:
+        try:
+            await params.llm.push_frame(
+                RTVIServerMessageFrame(data=payload),
+                FrameDirection.DOWNSTREAM,
+            )
+        except Exception as exc:
+            logger.warning("answer_as_agent: push %s frame failed: %s", payload.get("event"), exc)
+
     # Fire the hand-up signal to the browser BEFORE the expensive
     # subprocess call. The RTVIObserver in the pipeline picks this up
     # and wraps it into an RTVI "server-message" envelope that the JS
     # client surfaces via onServerMessage. This is how the user sees
     # "research has their hand up" a beat before hearing the answer.
-    try:
-        hand_up_frame = RTVIServerMessageFrame(
-            data={"event": "agent_selected", "agent": agent},
-        )
-        await params.llm.push_frame(hand_up_frame, FrameDirection.DOWNSTREAM)
-    except Exception as exc:
-        # Non-fatal: the browser just won't show the animation. Log
-        # and continue to the actual answer.
-        logger.warning("answer_as_agent: push hand-up frame failed: %s", exc)
+    await _push_event({"event": "agent_selected", "agent": agent})
 
     logger.info("answer_as_agent: agent=%s question=%r", agent, question[:80])
 
@@ -381,10 +418,24 @@ async def answer_as_agent_handler(params):
 
     if code != 0:
         logger.error("answer_as_agent failed: code=%d stderr=%s", code, err[:200])
+        # Tell the browser to drop the hand-up animation immediately and
+        # surface a visible error so the user knows the agent did NOT
+        # answer rather than silently waiting for nothing. This covers both
+        # the 25s timeout path (silent stuck hand-up was the main UX bug)
+        # and OAuth-token-expired / bridge-failed paths (Gemini would have
+        # mumbled a vague recovery line; now the user sees a real banner).
+        await _push_event({"event": "hand_down", "agent": agent})
+        err_short = (err[:200] if err else "voice bridge failed")
+        # Heuristic: if stderr contains hints of OAuth/auth failure, surface
+        # an actionable message. Otherwise pass the raw stderr snippet.
+        err_lower = (err or "").lower()
+        if any(s in err_lower for s in ("oauth", "401", "unauthorized", "token", "credentials")):
+            err_short = "auth failed (token expired?). Run `claude login` and restart the war room."
+        await _push_event({"event": "agent_error", "agent": agent, "error": err_short})
         await params.result_callback({
             "ok": False,
             "agent": agent,
-            "error": err[:200] or "voice bridge failed",
+            "error": err_short,
         }, properties=silent)
         return
 
@@ -394,6 +445,8 @@ async def answer_as_agent_handler(params):
         payload = json.loads(out)
     except json.JSONDecodeError:
         logger.error("answer_as_agent: invalid JSON from bridge: %r", out[:200])
+        await _push_event({"event": "hand_down", "agent": agent})
+        await _push_event({"event": "agent_error", "agent": agent, "error": "invalid bridge output"})
         await params.result_callback({
             "ok": False,
             "agent": agent,
@@ -403,12 +456,20 @@ async def answer_as_agent_handler(params):
 
     response_text = payload.get("response")
     if payload.get("error") or not response_text:
+        err_msg = payload.get("error") or "empty response"
+        await _push_event({"event": "hand_down", "agent": agent})
+        await _push_event({"event": "agent_error", "agent": agent, "error": err_msg[:200]})
         await params.result_callback({
             "ok": False,
             "agent": agent,
-            "error": payload.get("error") or "empty response",
+            "error": err_msg,
         }, properties=silent)
         return
+
+    # Success: drop the hand-up animation now that the agent has actually
+    # answered. The browser's 6s auto-clear is a fallback; this fires the
+    # instant the spoken response arrives, which feels natural.
+    await _push_event({"event": "hand_down", "agent": agent})
 
     await params.result_callback({
         "ok": True,

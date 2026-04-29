@@ -18,6 +18,8 @@ import yaml from 'js-yaml';
 import { readEnvFile } from './env.js';
 import { initDatabase, getSession, setSession } from './db.js';
 import { buildMemoryContext } from './memory.js';
+import { getScrubbedSdkEnv } from './security.js';
+import { requireEnabled, KillSwitchDisabledError } from './kill-switches.js';
 import { loadMcpServers } from './agent.js';
 import path from 'path';
 import { fileURLToPath } from 'url';
@@ -76,27 +78,18 @@ async function* singleTurn(text: string): AsyncGenerator<{
 
 async function main() {
   try {
+    // Kill-switch chokepoint for voice-bridge SDK calls. If LLM_SPAWN_ENABLED
+    // is off, exit cleanly with an error payload so warroom/server.py can
+    // surface "auth/spawn disabled" through the agent_error frame instead
+    // of a vague Gemini stutter.
+    requireEnabled('LLM_SPAWN_ENABLED');
+
     const secrets = readEnvFile(['CLAUDE_CODE_OAUTH_TOKEN', 'ANTHROPIC_API_KEY']);
-    const sdkEnv: Record<string, string | undefined> = { ...process.env };
-    // Strip env vars set by a wrapping Claude Code session. When the voice
-    // bridge is launched indirectly from inside a Claude Code session (e.g.
-    // during local testing where the Pipecat server was started from a
-    // Claude Code shell), the nested claude subprocess inherits these and
-    // exits with code 1. Clearing them guarantees the SDK spawns a fresh
-    // unrelated Claude Code process regardless of launch context.
-    for (const k of [
-      'CLAUDECODE',
-      'CLAUDE_CODE_ENTRYPOINT',
-      'CLAUDE_CODE_EXECPATH',
-      'CLAUDE_CODE_SSE_PORT',
-      'CLAUDE_CODE_IPC_PORT',
-      'CLAUDE_CODE_MAX_OUTPUT_TOKENS',
-      'CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS',
-    ]) {
-      delete sdkEnv[k];
-    }
-    if (secrets.CLAUDE_CODE_OAUTH_TOKEN) sdkEnv.CLAUDE_CODE_OAUTH_TOKEN = secrets.CLAUDE_CODE_OAUTH_TOKEN;
-    if (secrets.ANTHROPIC_API_KEY) sdkEnv.ANTHROPIC_API_KEY = secrets.ANTHROPIC_API_KEY;
+    // Strip nested Claude Code state plus every secret-shaped env var the
+    // SDK subprocess doesn't need to authenticate. A prompt-injected agent
+    // can read whatever's in its env; least-privilege limits the blast
+    // radius to just the SDK auth token. Shared with router/orchestrator.
+    const sdkEnv = getScrubbedSdkEnv(secrets);
 
     // Validate agent ID format (prevent path traversal)
     if (agentId !== 'main' && !/^[a-z][a-z0-9_-]{0,29}$/.test(agentId)) {

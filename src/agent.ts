@@ -7,6 +7,8 @@ import { AGENT_MAX_TURNS, PROJECT_ROOT, agentCwd } from './config.js';
 import { readEnvFile } from './env.js';
 import { classifyError, AgentError } from './errors.js';
 import { logger } from './logger.js';
+import { getScrubbedSdkEnv } from './security.js';
+import { requireEnabled } from './kill-switches.js';
 
 // ── MCP server loading ──────────────────────────────────────────────
 // The Agent SDK's settingSources loads CLAUDE.md and permissions from
@@ -180,18 +182,23 @@ export async function runAgent(
   onStreamText?: (accumulatedText: string) => void,
   mcpAllowlist?: string[],
 ): Promise<AgentResult> {
+  // Centralized kill-switch enforcement. Throws KillSwitchDisabledError if
+  // LLM_SPAWN_ENABLED has been flipped off — caller is expected to surface
+  // a "feature disabled" message rather than retry. This is the SINGLE
+  // chokepoint for Telegram, scheduler, mission worker, and any other
+  // path that ends up here; the war-room and voice paths have their own
+  // requireEnabled calls at their own SDK boundaries.
+  requireEnabled('LLM_SPAWN_ENABLED');
+
   // Read secrets from .env without polluting process.env.
   // CLAUDE_CODE_OAUTH_TOKEN is optional — the subprocess finds auth via ~/.claude/
   // automatically. Only needed if you want to override which account is used.
   const secrets = readEnvFile(['CLAUDE_CODE_OAUTH_TOKEN', 'ANTHROPIC_API_KEY']);
-
-  const sdkEnv: Record<string, string | undefined> = { ...process.env };
-  if (secrets.CLAUDE_CODE_OAUTH_TOKEN) {
-    sdkEnv.CLAUDE_CODE_OAUTH_TOKEN = secrets.CLAUDE_CODE_OAUTH_TOKEN;
-  }
-  if (secrets.ANTHROPIC_API_KEY) {
-    sdkEnv.ANTHROPIC_API_KEY = secrets.ANTHROPIC_API_KEY;
-  }
+  // Strip secret-shaped env vars (DASHBOARD_TOKEN, third-party API keys,
+  // DB_ENCRYPTION_KEY, etc.) before handing process.env to the SDK
+  // subprocess. A prompt-injected agent that calls `env` or `cat .env`
+  // can otherwise read every credential the parent process holds.
+  const sdkEnv = getScrubbedSdkEnv(secrets);
 
   let newSessionId: string | undefined;
   let resultText: string | null = null;
