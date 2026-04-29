@@ -1647,7 +1647,7 @@ async function loadAgents() {
     section.style.display = '';
     // Keep shared cache in sync so modal can pull fresh description without refetch
     missionAgentsList = data.agents || [];
-    if (!data.agents || data.agents.length <= 1) {
+    if (!data.agents || data.agents.length === 0) {
       container.innerHTML = '<div class="text-xs text-gray-600 py-2">No agents yet. Click + New Agent to create one.</div>';
       return;
     }
