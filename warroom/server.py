@@ -93,7 +93,7 @@ except ModuleNotFoundError as e:
     )
     sys.exit(1)
 
-from config import PROJECT_ROOT, AGENT_VOICES, DEFAULT_AGENT
+from config import PROJECT_ROOT, AGENT_VOICES, DEFAULT_AGENT, get_valid_agent_ids, load_dynamic_roster
 
 
 logging.basicConfig(
@@ -169,19 +169,8 @@ def print_ready(port: int, mode: str):
 NODE_BIN = os.environ.get("NODE_BIN") or shutil.which("node") or "node"
 MISSION_CLI = PROJECT_ROOT / "dist" / "mission-cli.js"
 VOICE_BRIDGE = PROJECT_ROOT / "dist" / "agent-voice-bridge.js"
-# Load agent roster dynamically from the file Node writes on startup.
-# Falls back to the default 5 if the file doesn't exist.
-def _load_agent_roster():
-    roster_path = Path("/tmp/warroom-agents.json")
-    try:
-        if roster_path.exists():
-            agents = json.loads(roster_path.read_text())
-            return {a["id"] for a in agents}
-    except Exception as exc:
-        logger.warning("Could not read agent roster from %s: %s", roster_path, exc)
-    return {"main", "research", "comms", "content", "ops"}
-
-VALID_AGENTS = _load_agent_roster()
+# Agent roster: uses the centralized helpers from config.py (two-tier fallback).
+VALID_AGENTS = get_valid_agent_ids()
 
 # Chat id used for agent-voice-bridge session persistence. The warroom is
 # a single shared meeting, not per-chat, so we use a fixed id unless the
@@ -291,23 +280,12 @@ async def get_time_handler(params):
 
 async def list_agents_handler(params):
     """Tool: list the sub-agents Gemini can delegate to, with one-line descriptions."""
-    # Build roster from the dynamic agent list + hardcoded descriptions for known agents
-    _known_descriptions = {
-        "main": "The Hand of the King. General ops, triage, defaults if unsure.",
-        "research": "Grand Maester. Web research, academic sources, competitive intel.",
-        "comms": "Master of Whisperers. Email, Slack, Telegram, customer comms.",
-        "content": "The Royal Bard. Writing, scripts, LinkedIn, YouTube, blog posts.",
-        "ops": "Master of War. Calendar, scheduling, internal tools, automations.",
-    }
+    agents = load_dynamic_roster()
     roster = {}
-    # Start with dynamic roster from /tmp/warroom-agents.json
-    try:
-        agents = json.loads(Path("/tmp/warroom-agents.json").read_text())
-        for a in agents:
-            aid = a["id"]
-            roster[aid] = _known_descriptions.get(aid, a.get("description", "Specialist agent"))
-    except Exception:
-        roster = dict(_known_descriptions)
+    for a in agents:
+        role = a.get("role", "")
+        desc = a.get("description", "Specialist agent")
+        roster[a["id"]] = f"{role}. {desc}" if role else desc
     await params.result_callback({"ok": True, "agents": roster})
 
 
@@ -420,7 +398,9 @@ async def answer_as_agent_handler(params):
 # ─── Mode 1: Gemini Live (speech-to-speech + tools) ────────────────────────
 
 # Shared with the dashboard — any HTTP POST to /api/warroom/pin writes here.
-PIN_PATH = Path("/tmp/warroom-pin.json")
+# Uses tempfile.gettempdir() for cross-platform compat (Windows temp != /tmp/).
+import tempfile as _tempfile
+PIN_PATH = Path(_tempfile.gettempdir()) / "warroom-pin.json"
 
 VALID_MODES = {"direct", "auto"}
 

@@ -382,7 +382,10 @@ async function main() {
       ok(`${pyResult.version} (${pyResult.bin})`);
 
       // Check if venv already exists and deps are installed
-      const venvPython = path.join(PROJECT_ROOT, 'warroom', '.venv', 'bin', 'python');
+      const venvBinDir = PLATFORM === 'win32' ? 'Scripts' : 'bin';
+      const venvPythonBin = PLATFORM === 'win32' ? 'python.exe' : 'python';
+      const venvPipBin = PLATFORM === 'win32' ? 'pip.exe' : 'pip';
+      const venvPython = path.join(PROJECT_ROOT, 'warroom', '.venv', venvBinDir, venvPythonBin);
       const depsInstalled = (): boolean => {
         if (!fs.existsSync(venvPython)) return false;
         const check = spawnSync(venvPython, ['-c', 'import pipecat'], { stdio: 'pipe', timeout: 10000 });
@@ -407,7 +410,9 @@ async function main() {
             } else {
               warn('Could not create venv. You can set it up manually later:');
               info(`  ${pyResult.bin} -m venv warroom/.venv`);
-              info('  source warroom/.venv/bin/activate');
+              info(PLATFORM === 'win32'
+                ? '  warroom\\.venv\\Scripts\\activate'
+                : '  source warroom/.venv/bin/activate');
               info('  pip install -r warroom/requirements.txt');
             }
           }
@@ -418,7 +423,7 @@ async function main() {
             info('Installing War Room dependencies (this may take ~60 seconds)...');
             console.log();
             const pipResult = spawnSync(
-              path.join(PROJECT_ROOT, 'warroom', '.venv', 'bin', 'pip'),
+              path.join(PROJECT_ROOT, 'warroom', '.venv', venvBinDir, venvPipBin),
               ['install', '-r', path.join(PROJECT_ROOT, 'warroom', 'requirements.txt')],
               { stdio: 'inherit', timeout: 300000 },
             );
@@ -431,7 +436,9 @@ async function main() {
               info('To fix, run these commands and then re-run npm run setup:');
               console.log();
               console.log(`  ${c.cyan}cd ${PROJECT_ROOT}${c.reset}`);
-              console.log(`  ${c.cyan}source warroom/.venv/bin/activate${c.reset}`);
+              console.log(`  ${c.cyan}${PLATFORM === 'win32'
+                ? 'warroom\\.venv\\Scripts\\activate'
+                : 'source warroom/.venv/bin/activate'}${c.reset}`);
               console.log(`  ${c.cyan}pip install -r warroom/requirements.txt${c.reset}`);
             }
           }
@@ -484,7 +491,8 @@ async function main() {
   const trimmedConfig = configInput.trim();
   if (trimmedConfig && trimmedConfig !== defaultConfigDir) {
     // Guard against accidental single-letter paths (e.g. typing "y" to confirm)
-    if (trimmedConfig.length < 3 || (!trimmedConfig.startsWith('/') && !trimmedConfig.startsWith('~') && !trimmedConfig.startsWith('.'))) {
+    const looksLikePath = trimmedConfig.startsWith('/') || trimmedConfig.startsWith('~') || trimmedConfig.startsWith('.') || /^[A-Za-z]:[\\/]/.test(trimmedConfig);
+    if (trimmedConfig.length < 3 || !looksLikePath) {
       warn(`"${trimmedConfig}" doesn't look like a directory path. Using default: ${defaultConfigDir}`);
     } else {
       claudeclawConfigDir = expandHome(trimmedConfig);
@@ -1110,9 +1118,14 @@ async function main() {
         console.log(`  ${c.cyan}npm start -- --agent ${id}${c.reset}`);
       }
       console.log();
-      info('Or install as background services:');
-      for (const id of createdAgents) {
-        console.log(`  ${c.cyan}bash scripts/agent-service.sh install ${id}${c.reset}`);
+      if (PLATFORM === 'win32') {
+        info('Or run as background services with PM2:');
+        console.log(`  ${c.cyan}pm2 start ecosystem.config.cjs${c.reset}`);
+      } else {
+        info('Or install as background services:');
+        for (const id of createdAgents) {
+          console.log(`  ${c.cyan}bash scripts/agent-service.sh install ${id}${c.reset}`);
+        }
       }
     } else {
       info('No agents created. You can add them later with:');
@@ -1192,6 +1205,8 @@ async function main() {
     info('Logs: tail -f /tmp/claudeclaw.log');
   } else if (PLATFORM === 'linux') {
     info('Logs: journalctl --user -u claudeclaw -f');
+  } else if (PLATFORM === 'win32') {
+    info('Logs: pm2 logs');
   }
   console.log();
   info(`Prefer Signal instead of Telegram? Set ${c.cyan}MESSENGER_TYPE=signal${c.reset} in .env and follow ${c.cyan}docs/messengers/signal.md${c.reset}.`);

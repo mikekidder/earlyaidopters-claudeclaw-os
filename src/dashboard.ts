@@ -60,6 +60,7 @@ import {
   setAgentDescription,
   getMainDescription,
   setMainDescription,
+  buildWarRoomRoster,
 } from './agent-config.js';
 import {
   listTemplates,
@@ -76,7 +77,7 @@ import {
 import { dispatchDashboardChatToAgent, processMessageFromDashboard } from './bot.js';
 import { getDashboardHtml } from './dashboard-html.js';
 import { getWarRoomHtml } from './warroom-html.js';
-import { WARROOM_ENABLED, WARROOM_PORT } from './config.js';
+import { WARROOM_ENABLED, WARROOM_PORT, TEMP_DIR } from './config.js';
 import { logger } from './logger.js';
 import { getTelegramConnected, getBotInfo, chatEvents, getIsProcessing, abortActiveQuery, ChatEvent, readAgentConnState } from './state.js';
 
@@ -279,20 +280,17 @@ export function startDashboard(botApi?: Api<RawApi>): void {
   });
 
   // Return the dynamic agent list for the War Room UI to render cards.
-  // Includes main + all configured agents with their display names.
+  // Two-tier: configured agents from agent.yaml, or default 5-agent demo roster.
   app.get('/api/warroom/agents', (c) => {
-    const ids = ['main', ...listAgentIds().filter((id) => id !== 'main')];
-    const agents = ids.map((id) => {
-      try {
-        const cfg = loadAgentConfig(id);
-        return { id, name: cfg.name || id, description: cfg.description || '' };
-      } catch {
-        // No agent.yaml — use a capitalised fallback (e.g. "main" → "Main")
-        const fallbackName = id.charAt(0).toUpperCase() + id.slice(1);
-        return { id, name: fallbackName, description: '' };
-      }
+    const roster = buildWarRoomRoster();
+    return c.json({
+      agents: roster.map((a) => ({
+        id: a.id,
+        name: a.name,
+        description: a.description,
+        role: a.role,
+      })),
     });
-    return c.json({ agents });
   });
 
   // ── War Room meeting history & transcript persistence ──────────────
@@ -331,7 +329,7 @@ export function startDashboard(botApi?: Api<RawApi>): void {
   // read the state without needing an IPC bus. router.py checks this
   // file's mtime and reloads only when it changes. Spoken agent prefixes
   // (e.g. "research, find X") still take precedence over the pin.
-  const WARROOM_PIN_PATH = '/tmp/warroom-pin.json';
+  const WARROOM_PIN_PATH = path.join(TEMP_DIR, 'warroom-pin.json');
   const VALID_PIN_AGENTS = new Set(['main', ...listAgentIds()]);
   const VALID_PIN_MODES = new Set(['direct', 'auto']);
 
@@ -509,23 +507,24 @@ export function startDashboard(botApi?: Api<RawApi>): void {
     // Return one row per known agent. Agents missing from voices.json get
     // a default Gemini voice suggestion from the pool so the UI can show
     // something reasonable without requiring the user to save first.
-    const knownAgents = ['main', ...listAgentIds().filter((id) => id !== 'main')];
+    const roster = buildWarRoomRoster();
     const usedGeminiVoices = new Set(
       Object.values(configured)
         .map((v) => v && typeof v === 'object' ? (v as { gemini_voice?: string }).gemini_voice : undefined)
         .filter((v): v is string => typeof v === 'string'),
     );
-    const rows = knownAgents.map((agent) => {
-      const entry = configured[agent] || {};
+    const rows = roster.map((a) => {
+      const entry = configured[a.id] || {};
       let geminiVoice = entry.gemini_voice;
       let isDefault = false;
       if (!geminiVoice) {
-        geminiVoice = agent === 'main' ? 'Charon' : pickDefaultGeminiVoice(usedGeminiVoices);
+        geminiVoice = a.id === 'main' ? 'Charon' : pickDefaultGeminiVoice(usedGeminiVoices);
         usedGeminiVoices.add(geminiVoice);
         isDefault = true;
       }
       return {
-        agent,
+        agent: a.id,
+        display_name: a.name,
         gemini_voice: geminiVoice,
         voice_id: entry.voice_id || '',
         name: entry.name || '',
@@ -596,29 +595,27 @@ export function startDashboard(botApi?: Api<RawApi>): void {
     // because that would kill the dashboard process we're currently
     // running inside — the HTTP response would never be delivered.
     try {
-      const { spawn } = await import('child_process');
-      // pgrep is simpler than parsing ps. Matches any python process
-      // whose command line includes "warroom/server.py".
-      const pids: number[] = await new Promise((resolve) => {
-        const p = spawn('pgrep', ['-f', 'warroom/server.py']);
-        let out = '';
-        p.stdout.on('data', (chunk) => { out += chunk.toString(); });
-        p.on('close', () => {
-          resolve(out.trim().split(/\s+/).map((s) => parseInt(s, 10)).filter((n) => Number.isFinite(n)));
-        });
-        p.on('error', () => resolve([]));
-      });
-      if (pids.length === 0) {
+      // Read the War Room PID from the file written by index.ts when it
+      // spawns the Python subprocess. This avoids platform-specific process
+      // lookup tools (pgrep on Unix, wmic on Windows) and the visible
+      // terminal windows they spawn on Windows.
+      const warroomPidFile = path.join(STORE_DIR, 'warroom.pid');
+      let pid: number | null = null;
+      try {
+        pid = parseInt(fs.readFileSync(warroomPidFile, 'utf-8').trim(), 10);
+        if (!Number.isFinite(pid) || pid <= 0) pid = null;
+      } catch { /* file missing or unreadable */ }
+
+      if (!pid) {
         return c.json({ ok: false, error: 'no warroom server process found' }, 500);
       }
-      for (const pid of pids) {
-        try { process.kill(pid, 'SIGTERM'); } catch { /* already dead */ }
-      }
-      logger.info({ pids }, 'Killed warroom subprocess for voice config reload');
+      try { process.kill(pid, 'SIGTERM'); } catch { /* already dead */ }
+      try { fs.unlinkSync(warroomPidFile); } catch { /* ok */ }
+      logger.info({ pid }, 'Killed warroom subprocess for voice config reload');
       return c.json({
         ok: true,
         applied: true,
-        killed_pids: pids,
+        killed_pid: pid,
         note: 'warroom server will be respawned by the main agent in ~0.5s with fresh voices.json',
       });
     } catch (err) {

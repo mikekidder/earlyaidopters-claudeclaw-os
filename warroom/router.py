@@ -27,16 +27,30 @@ from pipecat.frames.frames import (
 from pipecat.processors.frame_processor import FrameProcessor, FrameDirection
 
 
+from config import load_dynamic_roster, get_valid_agent_ids
+
 logger = logging.getLogger("warroom.router")
 
 # Shared state with the dashboard (src/dashboard.ts POST /api/warroom/pin).
 # Writing via the dashboard; reading here. The Pipecat server and the Hono
 # dashboard are separate processes, so we use this tiny file as IPC.
-PIN_PATH = Path("/tmp/warroom-pin.json")
+# Uses tempfile.gettempdir() for cross-platform compat (Windows temp != /tmp/).
+import tempfile as _tempfile
+PIN_PATH = Path(_tempfile.gettempdir()) / "warroom-pin.json"
 
 
-# Agent identifiers that match the agents/ directory names
-AGENT_NAMES = {"main", "research", "comms", "content", "ops"}
+# Agent IDs and display names from the dynamic roster (two-tier: configured
+# agents if agent.yaml files exist, otherwise the 5-agent default).
+_roster = load_dynamic_roster()
+AGENT_NAMES = get_valid_agent_ids()
+
+# Map both agent IDs and display names to canonical IDs so voice commands
+# like "ObiPrime, what's the weather" route correctly.
+_name_to_id: dict[str, str] = {}
+for _a in _roster:
+    _name_to_id[_a["id"].lower()] = _a["id"]
+    if _a.get("name"):
+        _name_to_id[_a["name"].lower()] = _a["id"]
 
 # Phrases that trigger a broadcast to all agents
 BROADCAST_TRIGGERS = {
@@ -47,9 +61,11 @@ BROADCAST_TRIGGERS = {
 # Common casual prefixes people use before an agent name
 _GREETING_PREFIXES = r"(?:hey|yo|ok|okay|alright)?\s*"
 
-# Build a compiled pattern: optional greeting + agent name + separator
+# Build a compiled pattern: optional greeting + agent name/display name + separator.
+# Sort names longest-first so "ObiPrime" matches before "Obi".
+_all_names = sorted(_name_to_id.keys(), key=len, reverse=True)
 _agent_pattern = re.compile(
-    rf"^\s*{_GREETING_PREFIXES}({'|'.join(AGENT_NAMES)})[,:\s]+(.+)",
+    rf"^\s*{_GREETING_PREFIXES}({'|'.join(re.escape(n) for n in _all_names)})[,:\s]+(.+)",
     re.IGNORECASE | re.DOTALL,
 )
 
@@ -161,10 +177,11 @@ class AgentRouter(FrameProcessor):
             await self.push_frame(route)
             return
 
-        # Check for agent name prefix
+        # Check for agent name prefix (matches both IDs and display names)
         match = _agent_pattern.match(text)
         if match:
-            agent_id = match.group(1).lower()
+            spoken_name = match.group(1).lower()
+            agent_id = _name_to_id.get(spoken_name, spoken_name)
             message = match.group(2).strip()
             route = AgentRouteFrame(
                 agent_id=agent_id,

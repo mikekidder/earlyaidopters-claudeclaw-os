@@ -18,7 +18,7 @@ from typing import Optional
 from pipecat.frames.frames import TextFrame, TTSUpdateSettingsFrame
 from pipecat.processors.frame_processor import FrameProcessor, FrameDirection
 
-from config import PROJECT_ROOT, AGENT_VOICES, DEFAULT_AGENT
+from config import PROJECT_ROOT, AGENT_VOICES, DEFAULT_AGENT, load_dynamic_roster
 from router import AgentRouteFrame, AGENT_NAMES
 
 
@@ -30,8 +30,8 @@ BRIDGE_TIMEOUT = 60
 # Path to the voice bridge script
 BRIDGE_SCRIPT = PROJECT_ROOT / "dist" / "agent-voice-bridge.js"
 
-# Agent order for round-robin broadcasts
-BROADCAST_ORDER = ["main", "research", "comms", "content", "ops"]
+# Agent order for round-robin broadcasts (from dynamic roster)
+BROADCAST_ORDER = [a["id"] for a in load_dynamic_roster()]
 
 
 class ClaudeAgentBridge(FrameProcessor):

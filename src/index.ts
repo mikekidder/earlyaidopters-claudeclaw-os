@@ -1,11 +1,11 @@
 import fs from 'fs';
 import path from 'path';
 
-import { loadAgentConfig, listAgentIds, resolveAgentDir, resolveAgentClaudeMd } from './agent-config.js';
+import { loadAgentConfig, listAgentIds, resolveAgentDir, resolveAgentClaudeMd, buildWarRoomRoster } from './agent-config.js';
 import { createBot } from './bot.js';
 import { createSignalBot, SignalBot } from './signal-bot.js';
 import { checkPendingMigrations } from './migrations.js';
-import { ALLOWED_CHAT_ID, activeBotToken, STORE_DIR, PROJECT_ROOT, CLAUDECLAW_CONFIG, GOOGLE_API_KEY, setAgentOverrides, SECURITY_PIN_HASH, IDLE_LOCK_MINUTES, EMERGENCY_KILL_PHRASE, WARROOM_ENABLED, WARROOM_PORT, MESSENGER_TYPE, SIGNAL_AUTHORIZED_RECIPIENTS, SIGNAL_PHONE_NUMBER } from './config.js';
+import { ALLOWED_CHAT_ID, activeBotToken, STORE_DIR, PROJECT_ROOT, CLAUDECLAW_CONFIG, GOOGLE_API_KEY, setAgentOverrides, SECURITY_PIN_HASH, IDLE_LOCK_MINUTES, EMERGENCY_KILL_PHRASE, WARROOM_ENABLED, WARROOM_PORT, MESSENGER_TYPE, SIGNAL_AUTHORIZED_RECIPIENTS, SIGNAL_PHONE_NUMBER, resolveVenvPython, TEMP_DIR, venvSetupHint } from './config.js';
 import { startDashboard } from './dashboard.js';
 import { initDatabase, cleanupOldMissionTasks, insertAuditLog } from './db.js';
 import { initSecurity, setAuditCallback } from './security.js';
@@ -227,22 +227,15 @@ async function main(): Promise<void> {
     // War Room voice server (auto-start if enabled, with auto-respawn)
     if (WARROOM_ENABLED) {
       const { spawn } = await import('child_process');
-      const venvPython = path.join(PROJECT_ROOT, 'warroom', '.venv', 'bin', 'python');
+      const venvPython = resolveVenvPython(path.join(PROJECT_ROOT, 'warroom', '.venv'));
       const serverScript = path.join(PROJECT_ROOT, 'warroom', 'server.py');
 
-      // Write agent roster to /tmp so the Python server can discover agents dynamically
+      // Write agent roster to /tmp so the Python server can discover agents dynamically.
+      // Uses the two-tier buildWarRoomRoster(): configured agents if any agent.yaml
+      // files exist, otherwise the default 5-agent demo roster.
       try {
-        const ids = ['main', ...listAgentIds().filter((id) => id !== 'main')];
-        const roster = ids.map((id) => {
-          try {
-            const cfg = loadAgentConfig(id);
-            return { id, name: cfg.name || id, description: cfg.description || '' };
-          } catch {
-            const fallbackName = id.charAt(0).toUpperCase() + id.slice(1);
-            return { id, name: fallbackName, description: '' };
-          }
-        });
-        fs.writeFileSync('/tmp/warroom-agents.json', JSON.stringify(roster, null, 2));
+        const roster = buildWarRoomRoster();
+        fs.writeFileSync(path.join(TEMP_DIR, 'warroom-agents.json'), JSON.stringify(roster, null, 2));
       } catch (err) {
         logger.warn({ err }, 'Could not write warroom agent roster');
       }
@@ -250,17 +243,16 @@ async function main(): Promise<void> {
       if (fs.existsSync(venvPython) && fs.existsSync(serverScript)) {
         // Pre-flight: verify Python dependencies are actually installed
         const { spawnSync } = await import('child_process');
-        const depCheck = spawnSync(venvPython, ['-c', 'import pipecat'], { stdio: 'pipe', timeout: 10000 });
+        const depCheck = spawnSync(venvPython, ['-c', 'import pipecat'], { stdio: 'pipe', timeout: 10000, windowsHide: true });
         if (depCheck.status !== 0) {
           const msg = 'War Room Python dependencies not installed. Run:\n\n'
-            + 'source warroom/.venv/bin/activate\n'
-            + 'pip install -r warroom/requirements.txt\n\n'
-            + 'Then restart the bot.';
+            + venvSetupHint('warroom/.venv', 'warroom/requirements.txt')
+            + '\n\nThen restart the bot.';
           logger.error(msg);
           void sendToPrimary(`War Room could not start.\n\n${msg}`);
         } else {
         // Dedicated log file for the warroom subprocess
-        const warroomLogPath = '/tmp/warroom-debug.log';
+        const warroomLogPath = path.join(TEMP_DIR, 'warroom-debug.log');
         let warroomLogFd: number | null = null;
         try {
           warroomLogFd = fs.openSync(warroomLogPath, 'a');
@@ -279,8 +271,16 @@ async function main(): Promise<void> {
             cwd: PROJECT_ROOT,
             env: { ...process.env, WARROOM_PORT: String(WARROOM_PORT) },
             stdio: ['ignore', 'pipe', 'pipe'],
+            windowsHide: true,
           });
           currentProc = proc;
+
+          // Write PID so the dashboard can find and kill the process
+          // without platform-specific tools (pgrep/wmic).
+          const warroomPidFile = path.join(STORE_DIR, 'warroom.pid');
+          if (proc.pid) {
+            try { fs.writeFileSync(warroomPidFile, String(proc.pid), { mode: 0o600 }); } catch { /* ok */ }
+          }
 
           proc.stdout.once('data', (data: Buffer) => {
             try {
@@ -310,8 +310,8 @@ async function main(): Promise<void> {
             } else {
               respawnAttempts += 1;
               if (respawnAttempts > MAX_CRASH_RESPAWNS) {
-                logger.error(`War Room crashed ${MAX_CRASH_RESPAWNS} times. Giving up. Check /tmp/warroom-debug.log for errors.`);
-                void sendToPrimary(`War Room crashed ${MAX_CRASH_RESPAWNS} times and has been disabled.\n\nCheck /tmp/warroom-debug.log, fix the issue, and restart the bot.`);
+                logger.error(`War Room crashed ${MAX_CRASH_RESPAWNS} times. Giving up. Check ${warroomLogPath} for errors.`);
+                void sendToPrimary(`War Room crashed ${MAX_CRASH_RESPAWNS} times and has been disabled.\n\nCheck ${warroomLogPath}, fix the issue, and restart the bot.`);
                 return;
               }
               delayMs = Math.min(30000, 500 * 2 ** Math.min(respawnAttempts, 6));
@@ -328,6 +328,7 @@ async function main(): Promise<void> {
           shuttingDown = true;
           try { currentProc?.kill(); } catch { /* ok */ }
           if (warroomLogFd !== null) { try { fs.closeSync(warroomLogFd); } catch { /* ok */ } }
+          try { fs.unlinkSync(path.join(STORE_DIR, 'warroom.pid')); } catch { /* ok */ }
         };
         process.on('exit', shutdownWarroom);
         process.on('SIGTERM', shutdownWarroom);
@@ -337,7 +338,7 @@ async function main(): Promise<void> {
         const missingVenv = !fs.existsSync(venvPython);
         const missingScript = !fs.existsSync(serverScript);
         const hint = missingVenv
-          ? 'Python venv not found. Run:\n\npython3 -m venv warroom/.venv\nsource warroom/.venv/bin/activate\npip install -r warroom/requirements.txt'
+          ? 'Python venv not found. Run:\n\n' + venvSetupHint('warroom/.venv', 'warroom/requirements.txt')
           : 'warroom/server.py not found. Make sure the warroom/ directory exists.';
         logger.warn('War Room enabled but cannot start: %s', hint);
         void sendToPrimary(`War Room is enabled but could not start.\n\n${hint}`);

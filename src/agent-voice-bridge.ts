@@ -21,6 +21,7 @@ import { buildMemoryContext } from './memory.js';
 import { loadMcpServers } from './agent.js';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import { resolveAgentDir } from './agent-config.js';
 
 // The voice bridge is a standalone subprocess — initialize the DB
 // connection before any getSession/setSession calls run. Without this,
@@ -103,14 +104,11 @@ async function main() {
       throw new Error(`Invalid agent ID: ${agentId}`);
     }
 
-    // Resolve agent directory and verify it's within the project
+    // Resolve agent directory using the same two-tier lookup as the rest of
+    // the system: CLAUDECLAW_CONFIG/agents/<id> first, then PROJECT_ROOT/agents/<id>.
     const agentDir = agentId === 'main'
       ? PROJECT_ROOT
-      : path.join(PROJECT_ROOT, 'agents', agentId);
-    const resolved = path.resolve(agentDir);
-    if (!resolved.startsWith(path.resolve(PROJECT_ROOT) + path.sep) && resolved !== path.resolve(PROJECT_ROOT)) {
-      throw new Error(`Agent path outside project: ${resolved}`);
-    }
+      : resolveAgentDir(agentId);
 
     // Read the agent's MCP allowlist from its agent.yaml (if present). The
     // text bot does this via loadAgentConfig in src/bot.ts; we do a minimal

@@ -43,6 +43,7 @@ import {
 } from './db.js';
 import { loadAgentConfig, listAgentIds } from './agent-config.js';
 import { readEnvFile } from './env.js';
+import { resolveVenvPython, TEMP_DIR, venvSetupHint } from './config.js';
 import { createRoom as dailyCreateRoom, deleteRoom as dailyDeleteRoom, DailyApiError } from './daily-client.js';
 
 initDatabase();
@@ -58,10 +59,10 @@ const PIKA_SCRIPT = path.join(
   'scripts',
   'pikastreaming_videomeeting.py',
 );
-const WARROOM_VENV_PY = path.join(PROJECT_ROOT, 'warroom', '.venv', 'bin', 'python');
+const WARROOM_VENV_PY = resolveVenvPython(path.join(PROJECT_ROOT, 'warroom', '.venv'));
 const VOICE_BRIDGE_JS = path.join(PROJECT_ROOT, 'dist', 'agent-voice-bridge.js');
 const DAILY_AGENT_PY = path.join(PROJECT_ROOT, 'warroom', 'daily_agent.py');
-const DAILY_AGENT_LOG_DIR = '/tmp';
+const DAILY_AGENT_LOG_DIR = TEMP_DIR;
 const AVATARS_DIR = path.join(PROJECT_ROOT, 'warroom', 'avatars');
 const DEFAULT_VOICE_ID = 'English_radiant_girl'; // Pika preset, per SKILL.md
 
@@ -171,8 +172,8 @@ async function runPikaScript(args: string[], timeoutSec = 90): Promise<{
   }
   if (!fs.existsSync(WARROOM_VENV_PY)) {
     throw new Error(
-      `Warroom venv python not found at ${WARROOM_VENV_PY}. Create it with: ` +
-      `python3 -m venv warroom/.venv && warroom/.venv/bin/pip install -r warroom/requirements.txt`,
+      `Warroom venv python not found at ${WARROOM_VENV_PY}. Create it with:\n` +
+      venvSetupHint('warroom/.venv', 'warroom/requirements.txt'),
     );
   }
 
@@ -202,6 +203,7 @@ async function runPikaScript(args: string[], timeoutSec = 90): Promise<{
       cwd: PROJECT_ROOT,
       env: env as NodeJS.ProcessEnv,
       stdio: ['ignore', 'pipe', 'pipe'],
+      windowsHide: true,
     });
 
     let stdout = '';
@@ -531,8 +533,8 @@ async function cmdJoinDaily(): Promise<void> {
   }
   if (!fs.existsSync(WARROOM_VENV_PY)) {
     die(
-      `warroom venv python not found at ${WARROOM_VENV_PY}. Create it with: ` +
-      `python3 -m venv warroom/.venv && warroom/.venv/bin/pip install -r warroom/requirements.txt`,
+      `warroom venv python not found at ${WARROOM_VENV_PY}. Create it with:\n` +
+      venvSetupHint('warroom/.venv', 'warroom/requirements.txt'),
     );
   }
 
@@ -626,6 +628,7 @@ async function cmdJoinDaily(): Promise<void> {
     env: subEnv as NodeJS.ProcessEnv,
     detached: true,
     stdio: ['ignore', logFd ?? 'ignore', logFd ?? 'ignore'],
+    windowsHide: true,
   });
   child.unref();
 

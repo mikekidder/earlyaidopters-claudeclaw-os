@@ -2,14 +2,14 @@
 Per-agent War Room personas for Gemini Live.
 
 Each entry is the system_instruction Gemini Live uses when that agent is
-the active speaker in the War Room. The persona is short on purpose —
+the active speaker in the War Room. The persona is short on purpose --
 Gemini Live responds faster with a compact system prompt, and the agent's
 deeper knowledge lives in its Claude Code environment (CLAUDE.md, skills,
 MCP, files), which it reaches via the `delegate_to_agent` tool when it
 needs real execution.
 
 Shared rules across all personas (applied via the SHARED_RULES header):
-- No em dashes, no AI clichés, no sycophancy, conversational and concise.
+- No em dashes, no AI cliches, no sycophancy, conversational and concise.
 - All personas have access to the same tool set (delegate_to_agent, get_time,
   list_agents). Any agent can delegate to any other agent including itself.
 - Answer from own knowledge first; only delegate when the task requires
@@ -18,9 +18,11 @@ Shared rules across all personas (applied via the SHARED_RULES header):
   Claude Code stack and pings the user on Telegram when done.
 """
 
+from config import load_dynamic_roster, DEFAULT_ROSTER
+
 SHARED_RULES = """HARD RULES (never break these):
 - No em dashes. Ever.
-- No AI clichés. Never say "Certainly", "Great question", "I'd be happy to", "As an AI", "absolutely", or any variation.
+- No AI cliches. Never say "Certainly", "Great question", "I'd be happy to", "As an AI", "absolutely", or any variation.
 - No sycophancy. Don't validate, flatter, or soften things unnecessarily.
 - Don't narrate what you're about to do. Just do it.
 - Keep responses conversational and concise. Usually 1-3 sentences unless the user asks for detail.
@@ -42,6 +44,9 @@ CRITICAL: When you call delegate_to_agent, speak your verbal confirmation ONCE, 
 For tiny questions ("what time is it", "who's on my team"), use the inline tools (get_time, list_agents)."""
 
 
+# Hardcoded personas for the default 5-agent roster. These are kept as
+# fallback for out-of-the-box installs and as examples. Custom agents
+# get dynamically generated personas via _generate_persona().
 AGENT_PERSONAS = {
     "main": (
         """You are Main, the Hand of the King in the War Room. You're the default agent and triage lead. Personality: chill, grounded, decisive. You're the face of the agent team and speak for them when the user hasn't picked a specific one.
@@ -102,15 +107,13 @@ Specialty: calendar ops (Google Calendar, Fireflies, Calendly), scheduled tasks,
 # The key difference from the per-agent personas above: auto never
 # answers from its own knowledge. Every substantive question routes
 # through a sub-agent. Small-talk ("hey", "thanks") is the only exception.
+#
+# The template uses {agent_count} and {roster_block} placeholders that
+# get filled dynamically from the roster at runtime.
 
-AUTO_ROUTER_PERSONA = (
-    """You are the front desk of the War Room. Five specialist agents sit around you:
+AUTO_ROUTER_PERSONA_TEMPLATE = """You are the front desk of the War Room. {agent_count} specialist agent(s) sit around you:
 
-- main: Hand of the King. General ops, triage, anything that doesn't clearly fit another agent.
-- research: Grand Maester. Deep web research, academic sources, competitive intel, trend analysis.
-- comms: Master of Whisperers. Email, Slack, Telegram, WhatsApp, customer comms, inbox triage.
-- content: Royal Bard. Writing, YouTube scripts, LinkedIn posts, blog copy, creative direction.
-- ops: Master of War. Calendar, scheduling, cron, system operations, MCP tool work, automations.
+{roster_block}
 
 YOUR JOB IS TO ROUTE, NOT TO ANSWER.
 
@@ -130,26 +133,71 @@ If the user uses a name prefix like "research, what's X" or "ask ops about Y", h
 If you genuinely cannot decide between two agents, route to main and let main triage. Do not stall asking clarifying questions.
 
 """
-    + SHARED_RULES
-)
+
+
+def _get_agent_display_name(agent_id: str) -> str:
+    """Look up an agent's display name from the roster, falling back to capitalized id."""
+    for a in load_dynamic_roster():
+        if a["id"] == agent_id:
+            return a.get("name", agent_id.title())
+    return agent_id.title()
 
 
 def _generate_persona(agent_id: str) -> str:
-    """Generate a basic persona for agents not in the hardcoded list."""
-    import json
-    from pathlib import Path
-    try:
-        roster = json.loads(Path("/tmp/warroom-agents.json").read_text())
-        for a in roster:
-            if a["id"] == agent_id:
-                name = a.get("name", agent_id.title())
-                desc = a.get("description", "a specialist agent")
+    """Generate a persona from the dynamic roster data.
+
+    If the roster entry has a `persona` field (extracted from CLAUDE.md by
+    the Node.js side), uses that directly -- it already contains the agent's
+    real personality, role, and scope. Otherwise falls back to a generated
+    persona from the name/description fields.
+    """
+    roster = load_dynamic_roster()
+    is_primary = roster and roster[0]["id"] == agent_id
+    team_names = [a.get("name", a["id"].title()) for a in roster if a["id"] != agent_id]
+
+    for a in roster:
+        if a["id"] == agent_id:
+            name = a.get("name", agent_id.title())
+
+            # If we have a CLAUDE.md-extracted persona, use it
+            persona_text = a.get("persona")
+            if persona_text:
+                context = f"You are in the War Room, a voice-based standup meeting.\n\n"
+                if is_primary and team_names:
+                    context += (
+                        f"You are the lead agent. Teammates: {', '.join(team_names)}. "
+                        f"Handle things yourself first. Only delegate when another agent "
+                        f"would genuinely do it better, and ask before delegating.\n\n"
+                    )
+                return context + persona_text + "\n\n" + SHARED_RULES
+
+            # Fallback: generate from name/description
+            desc = a.get("description", "a specialist agent")
+            role = a.get("role", "")
+
+            if is_primary:
+                team_line = ""
+                if team_names:
+                    team_line = (
+                        f" You have specialists available ({', '.join(team_names)}). "
+                        f"Handle things yourself first. Only suggest delegation when "
+                        f"another agent would genuinely do it better, and ask before delegating."
+                    )
                 return (
-                    f"You are {name} in the War Room. {desc}. "
+                    f"You are {name} in the War Room. You're the lead agent and triage point. "
+                    f"{desc}. Personality: chill, grounded, decisive. You're the face of the "
+                    f"agent team and speak for the user when they haven't picked a specific agent.\n\n"
+                    f"You are NOT just a router. You're the primary agent. When the user asks you "
+                    f"something, ANSWER IT. Don't deflect unless the task clearly requires another "
+                    f"agent's execution tools.{team_line}\n\n"
+                ) + SHARED_RULES
+            else:
+                role_line = f" Your role: {role}." if role else ""
+                return (
+                    f"You are {name} in the War Room. {desc}.{role_line} "
                     f"Personality: focused, competent, and concise.\n\n"
                 ) + SHARED_RULES
-    except Exception:
-        pass
+
     # Ultimate fallback: generic agent persona
     return (
         f"You are {agent_id.title()} in the War Room. "
@@ -157,47 +205,115 @@ def _generate_persona(agent_id: str) -> str:
     ) + SHARED_RULES
 
 
+def _extract_routing_summary(persona_text: str, max_chars: int = 500) -> str | None:
+    """Extract routing-relevant lines from a CLAUDE.md persona.
+
+    Specifically targets "You handle..." / "You do NOT handle..." statements
+    and their bullet points -- exactly the info a router needs to decide
+    which agent gets each question.
+    """
+    if not persona_text:
+        return None
+
+    lines = persona_text.split("\n")
+    kept: list[str] = []
+    capturing = False
+
+    for line in lines:
+        stripped = line.strip()
+        lower = stripped.lower()
+
+        # Start capturing on routing trigger lines
+        if any(kw in lower for kw in [
+            "you handle", "you do not handle", "you don't handle",
+            "you are the cross-project", "you are the lead",
+        ]):
+            capturing = True
+            kept.append(stripped)
+            continue
+
+        # Keep bullet points while capturing
+        if capturing and stripped.startswith("-"):
+            kept.append(stripped)
+            continue
+
+        # Another routing trigger restarts capture
+        if stripped and any(kw in lower for kw in [
+            "you handle", "you do not handle", "you don't handle",
+        ]):
+            capturing = True
+            kept.append(stripped)
+            continue
+
+        # Non-bullet non-empty line while capturing = new section, stop
+        if capturing and stripped:
+            capturing = False
+
+    if not kept:
+        return None
+    return " ".join(kept)[:max_chars]
+
+
 def _build_auto_roster_block() -> str:
-    """Build the agent roster lines for the auto-router persona from the dynamic roster file."""
-    import json
-    from pathlib import Path
-    _known = {
-        "main": "Hand of the King. General ops, triage, anything that doesn't clearly fit another agent.",
-        "research": "Grand Maester. Deep web research, academic sources, competitive intel, trend analysis.",
-        "comms": "Master of Whisperers. Email, Slack, Telegram, WhatsApp, customer comms, inbox triage.",
-        "content": "Royal Bard. Writing, YouTube scripts, LinkedIn posts, blog copy, creative direction.",
-        "ops": "Master of War. Calendar, scheduling, cron, system operations, MCP tool work, automations.",
-    }
-    try:
-        agents = json.loads(Path("/tmp/warroom-agents.json").read_text())
-        lines = []
-        for a in agents:
-            aid = a["id"]
-            desc = _known.get(aid, a.get("description", "Specialist agent."))
-            lines.append(f"- {aid}: {desc}")
-        if lines:
-            return "\n".join(lines)
-    except Exception:
-        pass
-    return "\n".join(f"- {k}: {v}" for k, v in _known.items())
+    """Build the agent roster lines for the auto-router persona from the dynamic roster.
+
+    When a CLAUDE.md persona is available, extracts routing-relevant descriptions
+    (what the agent handles / doesn't handle) for much better routing decisions.
+    Falls back to role + description for default agents.
+    """
+    roster = load_dynamic_roster()
+    _default_roles = {a["id"]: a.get("role", "") for a in DEFAULT_ROSTER}
+    is_custom = any(a.get("persona") for a in roster)
+    lines = []
+    for a in roster:
+        aid = a["id"]
+        name = a.get("name", aid.title())
+        persona = a.get("persona", "")
+        desc = a.get("description", "Specialist agent.")
+
+        if is_custom and persona:
+            # Extract routing-relevant info from the CLAUDE.md persona
+            routing = _extract_routing_summary(persona)
+            if routing:
+                lines.append(f"- {name} ({aid}): {routing}")
+                continue
+
+        # Fallback: use role + description (default roster style)
+        role = a.get("role", "") or _default_roles.get(aid, "")
+        if role and role != desc:
+            lines.append(f"- {name} ({aid}): {role}. {desc}")
+        else:
+            lines.append(f"- {name} ({aid}): {desc}")
+    return "\n".join(lines)
 
 
 def get_persona(agent_id: str, mode: str = "direct") -> str:
     """Return the persona for an agent.
 
-    In auto mode, returns the router persona with a dynamic agent roster.
-    In direct mode, returns the agent-specific persona, falling back to
-    a dynamically generated one for custom agents.
+    In auto mode, returns the router persona with a dynamic agent roster
+    built from the two-tier roster (configured agents or default 5).
+    In direct mode, returns the agent-specific persona. Uses the hardcoded
+    AGENT_PERSONAS only when running the default demo roster; otherwise
+    generates a fresh persona from the roster data so custom agent names
+    (e.g. "ObiPrime" instead of "Main") come through correctly.
     """
     if mode == "auto":
-        # Inject dynamic roster into the auto-router persona
-        roster = _build_auto_roster_block()
-        return AUTO_ROUTER_PERSONA.replace(
-            "- main: Hand of the King. General ops, triage, anything that doesn't clearly fit another agent.\n"
-            "- research: Grand Maester. Deep web research, academic sources, competitive intel, trend analysis.\n"
-            "- comms: Master of Whisperers. Email, Slack, Telegram, WhatsApp, customer comms, inbox triage.\n"
-            "- content: Royal Bard. Writing, YouTube scripts, LinkedIn posts, blog copy, creative direction.\n"
-            "- ops: Master of War. Calendar, scheduling, cron, system operations, MCP tool work, automations.",
-            roster,
-        )
+        roster = load_dynamic_roster()
+        block = _build_auto_roster_block()
+        return AUTO_ROUTER_PERSONA_TEMPLATE.format(
+            agent_count=len(roster),
+            roster_block=block,
+        ) + SHARED_RULES
+
+    # Check if this agent has a custom name (differs from the default roster).
+    # If so, generate a fresh persona instead of using the hardcoded one.
+    _default_names = {a["id"]: a.get("name", "") for a in DEFAULT_ROSTER}
+    for a in load_dynamic_roster():
+        if a["id"] == agent_id:
+            default_name = _default_names.get(agent_id, "")
+            roster_name = a.get("name", "")
+            if roster_name and roster_name != default_name:
+                return _generate_persona(agent_id)
+            break
+
     return AGENT_PERSONAS.get(agent_id) or _generate_persona(agent_id)

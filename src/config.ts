@@ -132,6 +132,48 @@ export const STORE_DIR = process.env.CLAUDECLAW_STORE_DIR
   ? path.resolve(process.env.CLAUDECLAW_STORE_DIR)
   : path.resolve(PROJECT_ROOT, 'store');
 
+// ── Cross-platform helpers ───────────────────────────────────────────
+
+const IS_WINDOWS = process.platform === 'win32';
+
+/**
+ * Resolve the Python executable inside a venv, cross-platform.
+ * Windows: .venv/Scripts/python.exe   Unix: .venv/bin/python
+ */
+export function resolveVenvPython(venvDir: string): string {
+  return IS_WINDOWS
+    ? path.join(venvDir, 'Scripts', 'python.exe')
+    : path.join(venvDir, 'bin', 'python');
+}
+
+/**
+ * Return the system temp directory (cross-platform).
+ * Unix: /tmp   Windows: os.tmpdir() (e.g. C:\Users\...\AppData\Local\Temp)
+ */
+export const TEMP_DIR: string = os.tmpdir();
+
+/**
+ * Build a platform-appropriate hint for creating and populating a venv.
+ * Supports both standard python and uv workflows.
+ */
+export function venvSetupHint(venvRelPath: string, requirementsRelPath: string): string {
+  if (IS_WINDOWS) {
+    return [
+      'Option 1 (uv):',
+      `  uv venv ${venvRelPath}`,
+      `  uv pip install -r ${requirementsRelPath} --python ${venvRelPath}\\Scripts\\python.exe`,
+      '',
+      'Option 2 (python):',
+      `  python -m venv ${venvRelPath}`,
+      `  ${venvRelPath}\\Scripts\\pip install -r ${requirementsRelPath}`,
+    ].join('\n');
+  }
+  return [
+    `python3 -m venv ${venvRelPath}`,
+    `${venvRelPath}/bin/pip install -r ${requirementsRelPath}`,
+  ].join('\n');
+}
+
 // ── External config directory ────────────────────────────────────────
 // Personal config files (CLAUDE.md, agent.yaml, agent CLAUDE.md) can live
 // outside the repo in CLAUDECLAW_CONFIG (default ~/.claudeclaw) so they
