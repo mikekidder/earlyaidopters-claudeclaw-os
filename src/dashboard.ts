@@ -237,32 +237,28 @@ export function buildDashboardApp(botApi?: Api<RawApi>): Hono {
     headers: { 'Content-Type': 'image/png', 'Cache-Control': 'public, max-age=86400' },
   }));
 
-  // Token auth middleware. Three categories of request:
+  // Token auth middleware.
   //
-  //   1. PUBLIC — static assets (Vite bundle, favicon) and the v2 SPA
-  //      shell HTML. Bundle has no secrets (it reads the token from
-  //      window.location at runtime). SPA shell has no embedded token.
-  //      Letting these through means a hard-refresh of a token-stripped
-  //      URL still loads the SPA, which can recover the token from
-  //      sessionStorage instead of showing raw 401 JSON.
-  //   2. LEGACY HTML — getDashboardHtml / getWarRoomHtml /
-  //      getWarRoomPickerHtml etc. interpolate DASHBOARD_TOKEN into
-  //      the page source, so they MUST stay token-gated. Those handlers
-  //      do their own token check inline when they're in legacy mode.
-  //   3. EVERYTHING ELSE — /api/*, SSE streams, legacy text room, etc.
-  //      Standard token gate runs here.
-  const PUBLIC_PREFIXES = ['/assets/', '/favicon'];
-  // SPA shell paths — index.html for these is harmless to serve to an
-  // unauthenticated caller. Inside the handlers we still gate the
-  // legacy fallbacks (which DO embed the token) by checking the token
-  // explicitly there.
-  const SPA_SHELL_PATHS = new Set(['/', '/warroom']);
+  // Strategy: the v2 SPA does client-side routing across many paths
+  // (/mission, /scheduled, /agents, /agents/:id/files, /chat,
+  // /memories, /hive, /usage, /audit, /settings, /warroom, /). When a
+  // user refreshes any of those URLs the server sees a real GET to
+  // that path. None of those response bodies contain secrets — they're
+  // all the same SPA shell index.html, which reads the token from
+  // window.location at runtime.
+  //
+  // So the rule is simple: GATE THE API. Everything else passes through
+  // the middleware, and the handlers fall through to the SPA-shell
+  // catch-all unless an earlier route matched. Legacy HTML routes that
+  // DO embed the token (warroom?mode=picker|voice, /warroom/text,
+  // / under DASHBOARD_LEGACY=true) call requireToken() inline.
   app.use('*', async (c, next) => {
     const path = new URL(c.req.url).pathname;
-    for (const p of PUBLIC_PREFIXES) {
-      if (path.startsWith(p)) { await next(); return; }
+    // Only gate the API surface. Static and HTML pass through.
+    if (!path.startsWith('/api/')) {
+      await next();
+      return;
     }
-    if (SPA_SHELL_PATHS.has(path)) { await next(); return; }
     const token = c.req.query('token');
     if (!DASHBOARD_TOKEN || !token || token !== DASHBOARD_TOKEN) {
       return c.json({ error: 'Unauthorized' }, 401);
@@ -451,6 +447,9 @@ export function buildDashboardApp(botApi?: Api<RawApi>): Hono {
     return '/warroom?' + q.toString();
   }
   app.get('/warroom/text', (c) => {
+    // Legacy HTML embeds DASHBOARD_TOKEN — gate it inline since the
+    // global middleware now only protects /api/*.
+    const denied = requireToken(c); if (denied) return denied;
     const chatId = c.req.query('chatId') || '';
     const meetingId = (c.req.query('meetingId') || '').trim();
     const archive = c.req.query('archive') === '1';
@@ -2632,6 +2631,25 @@ export function buildDashboardApp(botApi?: Api<RawApi>): Hono {
     if (!chatId) return c.json({ ok: false, reason: 'not_processing' });
     const aborted = abortActiveQuery(chatId);
     return c.json({ ok: aborted });
+  });
+
+  // SPA catch-all — any unmatched GET to a non-/api/* path falls through
+  // to here and serves the v2 SPA index.html. Wouter (the SPA's router)
+  // then takes over client-side. This is what makes a hard-refresh of
+  // /mission, /scheduled, /agents, /agents/:id/files, /chat, /memories,
+  // /hive, /usage, /audit, /settings work without a token: the page
+  // loads the SPA, which reads ?token= from the URL or sessionStorage
+  // before making any API call.
+  app.get('*', (c) => {
+    const path = new URL(c.req.url).pathname;
+    // /api/* would have been gated earlier, but if it slipped through
+    // somehow (no handler matched), still don't serve the SPA.
+    if (path.startsWith('/api/')) return c.json({ error: 'Not found' }, 404);
+    if (!fs.existsSync(newDashboardIndex)) {
+      return c.text('Dashboard not built. Run `npm run build`.', 503);
+    }
+    const html = fs.readFileSync(newDashboardIndex, 'utf-8');
+    return c.html(html);
   });
 
   return app;

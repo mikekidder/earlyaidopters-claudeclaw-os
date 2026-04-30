@@ -93,15 +93,17 @@ describe('auth gate', () => {
   // sees raw JSON {"error":"Unauthorized"} on every refresh — exactly
   // the bug Mark hit. The HTML these serve has no embedded secret; the
   // frontend reads token from query string then falls back to storage.
-  it('serves SPA shell at / without a token', async () => {
-    const res = await app.request('/');
-    expect(res.status).not.toBe(401);
-  });
-
-  it('serves SPA shell at /warroom without a token', async () => {
-    const res = await app.request('/warroom');
-    expect(res.status).not.toBe(401);
-  });
+  // Every client-side wouter route must be in this list.
+  for (const path of [
+    '/', '/warroom', '/mission', '/scheduled', '/agents',
+    '/agents/comms/files', '/chat', '/memories', '/hive', '/usage',
+    '/audit', '/settings',
+  ]) {
+    it(`serves SPA shell at ${path} without a token`, async () => {
+      const res = await app.request(path);
+      expect(res.status).not.toBe(401);
+    });
+  }
 
   // Legacy mode HTML embeds DASHBOARD_TOKEN, so those variants MUST stay
   // gated even though the path is exempt at the middleware. The handler
@@ -113,6 +115,11 @@ describe('auth gate', () => {
 
   it('blocks legacy /warroom?mode=voice without a token (HTML embeds token)', async () => {
     const res = await app.request('/warroom?mode=voice');
+    expect(res.status).toBe(401);
+  });
+
+  it('blocks legacy /warroom/text without a token (HTML embeds token)', async () => {
+    const res = await app.request('/warroom/text?meetingId=wr_test');
     expect(res.status).toBe(401);
   });
 
