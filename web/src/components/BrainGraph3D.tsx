@@ -1,6 +1,10 @@
 import { useEffect, useMemo, useRef, useState } from 'preact/hooks';
 import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
+import { EffectComposer } from 'three/examples/jsm/postprocessing/EffectComposer.js';
+import { RenderPass } from 'three/examples/jsm/postprocessing/RenderPass.js';
+import { UnrealBloomPass } from 'three/examples/jsm/postprocessing/UnrealBloomPass.js';
+import { OutputPass } from 'three/examples/jsm/postprocessing/OutputPass.js';
 import { X, Search, RotateCw, Sparkles, ChevronDown, ChevronRight, SlidersHorizontal } from 'lucide-preact';
 import { formatRelativeTime } from '@/lib/format';
 
@@ -98,15 +102,27 @@ function fbm(x: number, y: number, z: number): number {
   return noise3D(x, y, z) * 0.55 + noise3D(x * 2.3, y * 2.3, z * 2.3) * 0.28 + noise3D(x * 5.1, y * 5.1, z * 5.1) * 0.17;
 }
 
-// Ridge noise — `1 - |fbm|` produces meandering linear ridges instead
-// of round bumps. Stacked at multiple frequencies it gives the rope-
-// like cortical-fold pattern that makes a surface read as "brain"
-// rather than "rock with pebbles".
+// Ridge noise — `1 - |fbm|` produces meandering linear ridges. Stacked
+// at multiple frequencies and run through *domain warping* (sampling
+// the ridge at coordinates that have themselves been jittered by
+// another noise field) the result is the twisted, looping cortex
+// pattern that's instantly recognizable as a brain rather than a
+// generic noisy ball.
 function ridgedFbm(x: number, y: number, z: number): number {
   const r1 = (1 - Math.abs(fbm(x, y, z))) * 0.55;
   const r2 = (1 - Math.abs(fbm(x * 2.7, y * 2.7, z * 2.7))) * 0.30;
   const r3 = (1 - Math.abs(fbm(x * 6.3, y * 6.3, z * 6.3))) * 0.15;
-  return r1 + r2 + r3; // ~0..1
+  return r1 + r2 + r3;
+}
+
+function domainWarpedRidge(x: number, y: number, z: number): number {
+  // Sample warp offsets from independent noise fields, then evaluate
+  // the ridge noise at the warped coordinate. Warp amplitude ~0.6
+  // gives strong meandering without making the ridges chaotic.
+  const wx = fbm(x * 0.7, y * 0.7, z * 0.7) * 0.6;
+  const wy = fbm(x * 0.7 + 5.1, y * 0.7 + 5.1, z * 0.7 + 5.1) * 0.6;
+  const wz = fbm(x * 0.7 + 9.3, y * 0.7 + 9.3, z * 0.7 + 9.3) * 0.6;
+  return ridgedFbm(x + wx, y + wy, z + wz);
 }
 
 function smoothstep(edge0: number, edge1: number, x: number) {
@@ -189,12 +205,14 @@ function buildHemisphere(side: 'left' | 'right'): { mesh: THREE.Mesh; surface: T
     const len = Math.sqrt(x * x + y * y + z * z) + 0.0001;
     const nx = x / len, ny = y / len, nz = z / len;
 
-    // Ridge noise displacement — meandering folds, not round bumps.
-    const sx = nx * 3.4;
-    const sy = ny * 3.4;
-    const sz = nz * 2.6;
-    const ridge = ridgedFbm(sx, sy, sz);
-    const displacement = (ridge - 0.45) * 0.22;
+    // Domain-warped ridge — gives the twisting, looping fold pattern
+    // that real cortex has. Higher amplitude than before since the
+    // bloom pass will pick up the highlights and let valleys shadow.
+    const sx = nx * 3.6;
+    const sy = ny * 3.6;
+    const sz = nz * 2.8;
+    const ridge = domainWarpedRidge(sx, sy, sz);
+    const displacement = (ridge - 0.42) * 0.26;
 
     const factor = 1 + displacement;
     const px = x * factor;
@@ -317,6 +335,13 @@ export function BrainGraph3D({ entries, agentFilter, agentColors, blurOn }: Prop
   const [panelOpen, setPanelOpen] = useState(false);
   const [ready, setReady] = useState(false);
 
+  // Refs so the rAF animate loop can read the latest hovered/selected
+  // without re-binding the loop on every state change.
+  const hoveredEntryRef = useRef<number | null>(null);
+  const selectedEntryRef = useRef<number | null>(null);
+  useEffect(() => { hoveredEntryRef.current = hovered; }, [hovered]);
+  useEffect(() => { selectedEntryRef.current = selected?.id ?? null; }, [selected]);
+
   // Init scene once
   useEffect(() => {
     if (!wrapRef.current) return;
@@ -363,6 +388,25 @@ export function BrainGraph3D({ entries, agentFilter, agentColors, blurOn }: Prop
     const right = buildHemisphere('right');
     brainGroup.add(left.mesh);
     brainGroup.add(right.mesh);
+
+    // Brainstem stub at the back-bottom — small, slightly desaturated,
+    // matches the cerebrum's surface roughness so it reads as the same
+    // tissue. Adds anatomical credibility without complicating the
+    // lobe-coloring system.
+    const stemGeo = new THREE.CylinderGeometry(0.1, 0.14, 0.42, 24, 8, false);
+    stemGeo.translate(0, -0.2, 0);
+    const stemMat = new THREE.MeshStandardMaterial({
+      color: new THREE.Color(0xb89999),
+      roughness: 0.7,
+      metalness: 0,
+    });
+    const stem = new THREE.Mesh(stemGeo, stemMat);
+    // Tuck below the cerebrum, angled slightly back so it emerges from
+    // the underside rather than poking straight down.
+    stem.position.set(0, -0.45, -0.35);
+    stem.rotation.x = -0.45;
+    brainGroup.add(stem);
+
     scene.add(brainGroup);
 
     // Subtle ambient halo behind the brain
@@ -407,41 +451,76 @@ export function BrainGraph3D({ entries, agentFilter, agentColors, blurOn }: Prop
     controls.addEventListener('start', () => { lastInteract = Date.now(); });
     controls.addEventListener('change', () => { lastInteract = Date.now(); });
 
+    // Post-processing: bloom pass picks up the emissive dots and the
+    // bright ridge highlights and gives them a soft HDR-style glow.
+    // Tuned conservatively so the brain doesn't look radioactive — the
+    // glow should suggest activity, not blow out the colors.
+    const composer = new EffectComposer(renderer);
+    composer.addPass(new RenderPass(scene, camera));
+    const bloom = new UnrealBloomPass(
+      new THREE.Vector2(w, h),
+      0.18, // strength — very conservative. UnrealBloomPass amplifies
+            // hard; anything over 0.25 turns the dots into nukes.
+      0.35, // radius
+      0.92, // threshold — only the brightest peak-firing dots bloom
+    );
+    composer.addPass(bloom);
+    composer.addPass(new OutputPass());
+
     let rafId = 0;
     const start = performance.now();
     function animate() {
       rafId = requestAnimationFrame(animate);
       const t = (performance.now() - start) / 1000;
 
-      // Idle drift: slow auto-rotation when not interacting. Tighter
-      // threshold + faster rate so it's actually visible.
+      // Idle drift.
       const idle = Date.now() - lastInteract > 1500;
       if (idle) brainGroup.rotation.y += 0.0035;
 
-      // Subtle breathing pulse.
+      // Breathing pulse.
       const breathe = 1 + Math.sin(t * 0.7) * 0.012;
       brainGroup.scale.setScalar(breathe);
 
+      // Neural firing — every dot has its own deterministic pulse
+      // schedule based on its entry id so a few flash brightly at any
+      // given time, like neurons firing across the cortex.
+      dotMap.forEach((d) => {
+        if (d.entry.id === hoveredEntryRef.current) return;
+        if (selectedEntryRef.current === d.entry.id) return;
+        const seed = (d.entry.id % 100) / 100;
+        const phase = (t * 0.45 + seed * 8) % 5;
+        let scale = 1;
+        let intensity = 0.20;
+        if (phase < 0.55) {
+          const pulse = Math.sin((phase / 0.55) * Math.PI);
+          scale = 1 + pulse * 0.4;
+          intensity = 0.20 + pulse * 0.55;
+        }
+        d.mesh.scale.setScalar(scale);
+        d.halo.scale.setScalar(scale);
+        const mat = d.mesh.material as THREE.MeshStandardMaterial;
+        if (mat.emissiveIntensity !== undefined) {
+          mat.emissiveIntensity = intensity;
+        }
+      });
+
       controls.update();
-      renderer.render(scene, camera);
+      composer.render();
     }
     animate();
 
-    // Resize. Also fire once on a microtask so we catch any late
-    // layout settling — the initial mount sometimes reports a
-    // narrower clientWidth than what the layout finally computes.
     function resize() {
       const nw = wrap.clientWidth;
       const nh = wrap.clientHeight;
       if (nw === 0 || nh === 0) return;
       renderer.setSize(nw, nh, false);
+      composer.setSize(nw, nh);
+      bloom.setSize(nw, nh);
       camera.aspect = nw / nh;
       camera.updateProjectionMatrix();
     }
     const ro = new ResizeObserver(resize);
     ro.observe(wrap);
-    // Belt-and-suspenders: re-resize on the next frame, after Suspense
-    // boundary and any flex layout has fully settled.
     requestAnimationFrame(() => requestAnimationFrame(resize));
 
     sceneStateRef.current = {
@@ -453,7 +532,7 @@ export function BrainGraph3D({ entries, agentFilter, agentColors, blurOn }: Prop
         cancelAnimationFrame(rafId);
         ro.disconnect();
         controls.dispose();
-        // Dispose meshes & materials
+        composer.dispose();
         scene.traverse((obj) => {
           if ((obj as any).geometry) (obj as any).geometry.dispose();
           if ((obj as any).material) {
@@ -507,17 +586,27 @@ export function BrainGraph3D({ entries, agentFilter, agentColors, blurOn }: Prop
       const color = new THREE.Color(colorHex);
 
       const r = 0.04 * filters.nodeSize;
-      const dotGeo = new THREE.SphereGeometry(r, 12, 12);
-      const dotMat = new THREE.MeshBasicMaterial({ color, transparent: true });
+      const dotGeo = new THREE.SphereGeometry(r, 14, 14);
+      // Emissive material so the bloom pass catches each dot like a
+      // tiny firing neuron. The emissiveIntensity is animated in the
+      // rAF loop to create the neural-firing pulse effect.
+      const dotMat = new THREE.MeshStandardMaterial({
+        color,
+        emissive: color,
+        emissiveIntensity: 0.20,
+        roughness: 0.4,
+        metalness: 0,
+      });
       const dot = new THREE.Mesh(dotGeo, dotMat);
       dot.position.copy(outward);
       state.dotsGroup.add(dot);
 
-      // Halo (additive sprite-style sphere). depthTest:false so halos
-      // don't get clipped by the brain mesh in front of them.
-      const haloGeo = new THREE.SphereGeometry(r * 2.6, 8, 8);
+      // Halo — additive sphere that gets pulled by bloom for an
+      // extra outer glow. The dot itself bloomed gives the core; the
+      // halo gives the soft falloff.
+      const haloGeo = new THREE.SphereGeometry(r * 2.6, 10, 10);
       const haloMat = new THREE.MeshBasicMaterial({
-        color, transparent: true, opacity: 0.32, depthWrite: false,
+        color, transparent: true, opacity: 0.42, depthWrite: false,
         blending: THREE.AdditiveBlending,
       });
       const halo = new THREE.Mesh(haloGeo, haloMat);
