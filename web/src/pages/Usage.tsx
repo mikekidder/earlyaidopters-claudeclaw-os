@@ -3,6 +3,7 @@ import { Pill, StatusDot } from '@/components/Pill';
 import { PageState } from '@/components/PageState';
 import { useFetch } from '@/lib/useFetch';
 import { formatCost, formatNumber } from '@/lib/format';
+import { showCosts } from '@/lib/theme';
 import { chatId } from '@/lib/api';
 
 interface TokenStats {
@@ -48,14 +49,14 @@ export function Usage() {
 
       {stats && (
         <div class="flex-1 overflow-y-auto p-6 space-y-4">
-          <div class="grid grid-cols-4 gap-3">
+          <div class={(showCosts.value ? 'grid-cols-4' : 'grid-cols-2') + ' grid gap-3'}>
             <KpiCard label="Today turns" value={formatNumber(stats.todayTurns)} />
             <KpiCard label="Today tokens" value={formatNumber(stats.todayInput + stats.todayOutput)} />
-            <KpiCard label="Today cost" value={formatCost(stats.todayCost)} />
-            <KpiCard label="Lifetime cost" value={formatCost(stats.allTimeCost)} />
+            {showCosts.value && <KpiCard label="Today cost" value={formatCost(stats.todayCost)} />}
+            {showCosts.value && <KpiCard label="Lifetime cost" value={formatCost(stats.allTimeCost)} />}
           </div>
 
-          {timeline.length > 0 && (
+          {timeline.length > 0 && showCosts.value && (
             <div class="bg-[var(--color-card)] border border-[var(--color-border)] rounded-lg p-4">
               <div class="flex items-center justify-between mb-3">
                 <div class="text-[10px] uppercase tracking-wider text-[var(--color-text-faint)]">30-day cost</div>

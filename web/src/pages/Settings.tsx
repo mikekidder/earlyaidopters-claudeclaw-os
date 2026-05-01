@@ -10,6 +10,7 @@ import {
   theme, themeMeta, setTheme, type ThemeName,
   customAccent, setCustomAccent,
   uiScale, setUiScale,
+  showCosts, setShowCosts,
 } from '@/lib/theme';
 import {
   workspaceName,
@@ -94,11 +95,19 @@ export function Settings() {
 
           <Section
             title="Display"
-            subtitle="UI scale is per-browser (stored in localStorage), not per-workspace."
+            subtitle="Per-browser display preferences. Stored in localStorage, not per-workspace."
           >
             <Card>
               <Row label="UI scale" hint="Zooms the whole app proportionally so layout stays correct.">
                 <ScalePicker />
+              </Row>
+              <Divider />
+              <Row label="Show costs" hint="Hide if you're on a Claude Code subscription — costs only matter on the API path.">
+                <Toggle
+                  on={showCosts.value}
+                  onChange={() => setShowCosts(!showCosts.value)}
+                  ariaLabel="Show costs"
+                />
               </Row>
             </Card>
           </Section>

@@ -12,6 +12,7 @@ import { useFetch } from '@/lib/useFetch';
 import { useDebouncedValue } from '@/lib/useDebounce';
 import { apiPost, apiPatch, apiDelete } from '@/lib/api';
 import { formatCost } from '@/lib/format';
+import { showCosts } from '@/lib/theme';
 import { pushToast } from '@/lib/toasts';
 
 interface Agent {
@@ -197,15 +198,19 @@ function AgentCard({ agent, onChange, onOpen }: { agent: Agent; onChange: () => 
         {agent.running ? <Pill tone="done">running</Pill> : <Pill tone="cancelled">offline</Pill>}
       </div>
 
-      <div class="grid grid-cols-2 gap-3 border-t border-[var(--color-border)] pt-2.5 mb-3">
+      <div
+        class={(showCosts.value ? 'grid grid-cols-2' : 'grid grid-cols-1') + ' gap-3 border-t border-[var(--color-border)] pt-2.5 mb-3'}
+      >
         <div>
           <div class="text-[var(--color-text-faint)] text-[10px] uppercase tracking-wider mb-0.5">Today turns</div>
           <div class="text-[var(--color-text)] tabular-nums text-[12px]">{agent.todayTurns ?? 0}</div>
         </div>
-        <div class="text-right">
-          <div class="text-[var(--color-text-faint)] text-[10px] uppercase tracking-wider mb-0.5">Today cost</div>
-          <div class="text-[var(--color-text)] tabular-nums text-[12px]">{formatCost(agent.todayCost ?? 0)}</div>
-        </div>
+        {showCosts.value && (
+          <div class="text-right">
+            <div class="text-[var(--color-text-faint)] text-[10px] uppercase tracking-wider mb-0.5">Today cost</div>
+            <div class="text-[var(--color-text)] tabular-nums text-[12px]">{formatCost(agent.todayCost ?? 0)}</div>
+          </div>
+        )}
       </div>
 
       <div class="flex items-center gap-1" onClick={(e) => e.stopPropagation()}>

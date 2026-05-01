@@ -7,6 +7,7 @@ import { useFetch } from '@/lib/useFetch';
 import { apiGet, apiPost, chatId } from '@/lib/api';
 import { renderMarkdown } from '@/lib/markdown';
 import { formatCost, formatNumber } from '@/lib/format';
+import { showCosts } from '@/lib/theme';
 import { subscribeChatStream, chatStreamConnected, resetUnread } from '@/lib/chat-stream';
 
 interface Turn { role: 'user' | 'assistant'; content: string; source?: string; created_at?: number; }
@@ -226,7 +227,9 @@ function SessionBar({
         <span><span class="uppercase tracking-wider">Ctx</span> <span class="text-[var(--color-text-muted)]">{contextPct}%</span></span>
       )}
       <span><span class="uppercase tracking-wider">Turns today</span> <span class="text-[var(--color-text-muted)]">{formatNumber(turnsToday)}</span></span>
-      <span><span class="uppercase tracking-wider">Cost today</span> <span class="text-[var(--color-text-muted)]">{formatCost(costToday)}</span></span>
+      {showCosts.value && (
+        <span><span class="uppercase tracking-wider">Cost today</span> <span class="text-[var(--color-text-muted)]">{formatCost(costToday)}</span></span>
+      )}
       {model && (
         <span class="ml-auto"><span class="uppercase tracking-wider">Model</span> <span class="text-[var(--color-text-muted)] normal-case font-mono">{model.replace('claude-', '')}</span></span>
       )}

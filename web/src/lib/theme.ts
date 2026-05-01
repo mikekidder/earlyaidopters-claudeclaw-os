@@ -5,6 +5,7 @@ export type ThemeName = 'graphite' | 'midnight' | 'crimson';
 const STORAGE_KEY = 'claudeclaw.theme';
 const ACCENT_KEY = 'claudeclaw.theme.customAccent';
 const SCALE_KEY = 'claudeclaw.uiScale';
+const SHOW_COSTS_KEY = 'claudeclaw.showCosts';
 
 function loadInitial(): ThemeName {
   try {
@@ -32,6 +33,17 @@ function loadScale(): number {
   return 1.0;
 }
 
+function loadShowCosts(): boolean {
+  try {
+    const v = localStorage.getItem(SHOW_COSTS_KEY);
+    if (v === 'on') return true;
+    if (v === 'off') return false;
+  } catch {}
+  // Default OFF for Claude Code subscription users — costs are only
+  // meaningful if you're on the API path. Toggle on in Settings → Display.
+  return false;
+}
+
 export const theme = signal<ThemeName>(loadInitial());
 
 /** Custom accent override (hex). When set, it overrides the active
@@ -44,6 +56,13 @@ export const customAccent = signal<string | null>(loadCustomAccent());
  *  scale, which would clip overflows). 1.0 is the design baseline;
  *  most users will want 1.1–1.25. */
 export const uiScale = signal<number>(loadScale());
+
+/** Whether to surface per-agent / per-session cost figures. Default OFF
+ *  because most users are on the Claude Code subscription path where
+ *  cost is irrelevant. Flip on in Settings → Display if you've moved
+ *  to the API. Affects Agent cards, AgentDetail KPIs, Usage page KPIs
+ *  + 30-day chart, and the Chat session bar's "Cost today" cell. */
+export const showCosts = signal<boolean>(loadShowCosts());
 
 export const themeMeta: Record<ThemeName, { label: string; swatch: string }> = {
   graphite: { label: 'Graphite', swatch: '#8b8af0' },
@@ -87,6 +106,10 @@ effect(() => {
   try { localStorage.setItem(SCALE_KEY, String(s)); } catch {}
 });
 
+effect(() => {
+  try { localStorage.setItem(SHOW_COSTS_KEY, showCosts.value ? 'on' : 'off'); } catch {}
+});
+
 export function setTheme(next: ThemeName) {
   theme.value = next;
 }
@@ -98,6 +121,10 @@ export function setCustomAccent(hex: string | null) {
 
 export function setUiScale(next: number) {
   uiScale.value = Math.max(0.8, Math.min(1.6, next));
+}
+
+export function setShowCosts(next: boolean) {
+  showCosts.value = next;
 }
 
 // Lighten/darken a hex color by `pct` percent (-100..100). Used to

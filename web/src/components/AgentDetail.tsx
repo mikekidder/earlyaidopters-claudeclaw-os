@@ -8,6 +8,7 @@ import { useFetch } from '@/lib/useFetch';
 import { formatRelativeTime, formatCost } from '@/lib/format';
 import { chatId, dashboardToken } from '@/lib/api';
 import { pushToast } from '@/lib/toasts';
+import { showCosts } from '@/lib/theme';
 
 interface Agent {
   id: string;
@@ -195,12 +196,13 @@ function Header({ agent }: { agent: Agent }) {
 
 function OverviewTab({ agent }: { agent: Agent }) {
   const tokens = useFetch<AgentTokens>(`/api/agents/${agent.id}/tokens`);
+  const costsOn = showCosts.value;
   return (
     <div class="space-y-3">
-      <div class="grid grid-cols-3 gap-2">
+      <div class={(costsOn ? 'grid-cols-3' : 'grid-cols-1') + ' grid gap-2'}>
         <Kpi label="Today turns" value={String(agent.todayTurns)} />
-        <Kpi label="Today cost" value={formatCost(agent.todayCost)} />
-        <Kpi label="Lifetime cost" value={formatCost(tokens.data?.allTimeCost || 0)} />
+        {costsOn && <Kpi label="Today cost" value={formatCost(agent.todayCost)} />}
+        {costsOn && <Kpi label="Lifetime cost" value={formatCost(tokens.data?.allTimeCost || 0)} />}
       </div>
       <Section label="Configuration">
         <Row label="Model"><Pill tone="neutral">{agent.model || 'default'}</Pill></Row>
