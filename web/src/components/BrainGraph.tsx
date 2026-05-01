@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'preact/hooks';
-import { X, Search, RotateCw, Sparkles, ChevronDown, ChevronRight } from 'lucide-preact';
+import { X, Search, RotateCw, Sparkles, ChevronDown, ChevronRight, SlidersHorizontal } from 'lucide-preact';
 import { formatRelativeTime } from '@/lib/format';
 
 interface HiveEntry {
@@ -22,82 +22,77 @@ interface Props {
 }
 
 // ── Brain shape ─────────────────────────────────────────────────────
-// Hand-tuned multi-path silhouette in an 800×500 viewBox. Goes for
-// recognizable-as-a-brain over anatomically perfect: smooth bumpy
-// cortex, longitudinal fissure, distinct cerebellum at the back, and
-// a tiny brainstem extension. All the gyri texture comes from the
-// dashed sulci overlay rather than chiseling the outline itself,
-// which keeps the shape readable when scaled small.
+// Cerebrum only — clean superior view. The outline has subtle gyri
+// bumps; the textured "wrinkled brain" feel comes from many internal
+// sulci drawn as soft curves on top.
 
-const VIEW_W = 800;
-const VIEW_H = 540;
+const VIEW_W = 900;
+const VIEW_H = 520;
 
-// Cerebrum (the big two-hemisphere body)
 const CEREBRUM_PATH =
-  'M 400,82 ' +
-  'C 425,75 462,76 492,86 ' +
-  'C 528,75 568,82 598,100 ' +
-  'C 638,118 662,150 672,190 ' +
-  'C 682,225 682,260 672,300 ' +
-  'C 662,335 645,365 615,385 ' +
-  'C 605,395 590,403 572,407 ' +
-  'C 555,415 540,420 510,420 ' +
-  'L 400,420 ' +
-  'L 290,420 ' +
-  'C 260,420 245,415 228,407 ' +
-  'C 210,403 195,395 185,385 ' +
-  'C 155,365 138,335 128,300 ' +
-  'C 118,260 118,225 128,190 ' +
-  'C 138,150 162,118 202,100 ' +
-  'C 232,82 272,75 308,86 ' +
-  'C 338,76 375,75 400,82 Z';
+  'M 450,72 ' +
+  'C 492,56 540,58 575,82 ' +
+  'C 628,86 678,116 707,162 ' +
+  'C 736,202 745,254 730,304 ' +
+  'C 717,352 686,392 645,416 ' +
+  'C 610,432 572,442 530,442 ' +
+  'C 508,452 480,458 460,455 ' +
+  'C 452,460 448,460 440,455 ' +
+  'C 420,458 392,452 370,442 ' +
+  'C 328,442 290,432 255,416 ' +
+  'C 214,392 183,352 170,304 ' +
+  'C 155,254 164,202 193,162 ' +
+  'C 222,116 272,86 325,82 ' +
+  'C 360,58 408,56 450,72 Z';
 
-// Cerebellum (back-bottom rounded bump that joins the cerebrum)
-const CEREBELLUM_PATH =
-  'M 286,418 ' +
-  'C 274,438 282,468 314,476 ' +
-  'C 354,488 446,488 486,476 ' +
-  'C 518,468 526,438 514,418 ' +
-  'L 286,418 Z';
+// Longitudinal fissure — full length of the brain, slightly off-axis
+// so the two hemispheres feel organic rather than clinical.
+const FISSURE_PATH = 'M 450,74 C 446,170 454,290 450,455';
 
-// Longitudinal fissure (decorative dashed line down the middle)
-const FISSURE_PATH = 'M 400,84 C 397,180 403,300 400,418';
-
-// Sulci — short curved lines suggesting cortical folds.
-const SULCI = [
-  // Central sulcus, left and right hemispheres
-  'M 260,165 C 235,200 232,250 252,290',
-  'M 540,165 C 565,200 568,250 548,290',
-  // Lateral sulcus
-  'M 175,260 C 215,290 250,310 285,318',
-  'M 625,260 C 585,290 550,310 515,318',
-  // Parieto-occipital sulcus
-  'M 320,330 L 360,365',
-  'M 480,330 L 440,365',
+// Sulci — short curved lines that give the surface its wrinkled
+// cortical texture. Hand-arranged in roughly anatomical positions so
+// the brain reads as folded rather than smooth. Mirrored across the
+// midline; the slight asymmetry in offsets is intentional.
+const SULCI_LEFT = [
+  // Frontal lobe folds
+  'M 282,118 C 270,148 268,178 280,208',
+  'M 232,148 C 224,180 220,210 228,240',
+  'M 320,108 C 318,140 322,172 332,200',
+  // Central sulcus area
+  'M 300,178 C 285,210 282,250 295,290',
+  'M 250,210 C 240,240 240,275 252,302',
+  // Lateral / temporal
+  'M 195,280 C 220,295 250,302 285,300',
+  'M 215,330 C 245,348 280,360 320,358',
+  // Parietal folds
+  'M 350,250 C 340,278 340,310 352,338',
+  'M 280,360 C 300,378 332,392 365,392',
+  // Occipital
+  'M 320,400 C 348,418 380,428 412,425',
+  // Tertiary
+  'M 270,250 C 282,272 280,300 268,322',
+  'M 380,180 C 372,210 372,238 382,265',
 ];
 
-// Cerebellar folia — horizontal striations that read as the cerebellum's
-// distinctive ridge pattern.
-const FOLIA = [
-  { y: 432, x1: 295, x2: 505 },
-  { y: 442, x1: 290, x2: 510 },
-  { y: 452, x1: 290, x2: 510 },
-  { y: 462, x1: 300, x2: 500 },
+const SULCI_RIGHT = [
+  'M 618,118 C 630,148 632,178 620,208',
+  'M 668,148 C 676,180 680,210 672,240',
+  'M 580,108 C 582,140 578,172 568,200',
+  'M 600,178 C 615,210 618,250 605,290',
+  'M 650,210 C 660,240 660,275 648,302',
+  'M 705,280 C 680,295 650,302 615,300',
+  'M 685,330 C 655,348 620,360 580,358',
+  'M 550,250 C 560,278 560,310 548,338',
+  'M 620,360 C 600,378 568,392 535,392',
+  'M 580,400 C 552,418 520,428 488,425',
+  'M 630,250 C 618,272 620,300 632,322',
+  'M 520,180 C 528,210 528,238 518,265',
 ];
-
-// Brainstem — small bumpy strip below the cerebellum
-const BRAINSTEM_PATH =
-  'M 378,476 ' +
-  'C 374,492 374,510 380,520 ' +
-  'L 420,520 ' +
-  'C 426,510 426,492 422,476 Z';
 
 // ── Lobes ───────────────────────────────────────────────────────────
-// Each lobe is an axis-aligned rectangle inside the brain. Rectangles
-// can overlap a bit; rejection sampling against both the lobe rect
-// AND the brain shape keeps dots inside the silhouette. Rectangles
-// are also used to position the lobe label and as click targets when
-// the user wants to filter by lobe.
+// Four lobes only. Rectangles overlap a bit; rejection sampling
+// against both the lobe rect AND the brain shape keeps dots inside
+// the silhouette. They're clickable as filters via the labels.
 
 interface Lobe {
   id: string;
@@ -108,26 +103,21 @@ interface Lobe {
 }
 
 const LOBES: Lobe[] = [
-  { id: 'frontal',    label: 'Frontal',    color: '#5eb6ff', rect: [180,  88, 440, 130], labelAt: [400, 110] },
-  { id: 'parietal',   label: 'Parietal',   color: '#10b981', rect: [220, 218, 360,  90], labelAt: [400, 248] },
-  { id: 'temporal',   label: 'Temporal',   color: '#f59e0b', rect: [140, 280, 520,  60], labelAt: [200, 320] },
-  { id: 'occipital',  label: 'Occipital',  color: '#a78bfa', rect: [250, 340, 300,  78], labelAt: [400, 388] },
-  { id: 'cerebellum', label: 'Cerebellum', color: '#fb7185', rect: [280, 418, 240,  60], labelAt: [400, 458] },
-  { id: 'brainstem',  label: 'Brainstem',  color: '#94a3b8', rect: [370, 476,  60,  44], labelAt: [400, 530] },
+  { id: 'frontal',   label: 'Frontal',   color: '#5eb6ff', rect: [200,  80, 500, 110], labelAt: [450,  98] },
+  { id: 'parietal',  label: 'Parietal',  color: '#10b981', rect: [240, 190, 420, 100], labelAt: [450, 240] },
+  { id: 'temporal',  label: 'Temporal',  color: '#f59e0b', rect: [165, 280, 570,  90], labelAt: [240, 350] },
+  { id: 'occipital', label: 'Occipital', color: '#a78bfa', rect: [280, 370, 340,  80], labelAt: [450, 410] },
 ];
 
 const LOBE_BY_ID = LOBES.reduce<Record<string, Lobe>>((acc, l) => { acc[l.id] = l; return acc; }, {});
 
-// Map agent → home lobe. Anything not in the map falls back to
-// frontal. The mapping reads loosely as "the role this agent plays
-// inside the assistant's cognition".
 const AGENT_LOBE: Record<string, string> = {
-  main:     'frontal',     // the executive — decisions, planning
+  main:     'frontal',     // executive, planning
   research: 'parietal',    // sensing & integration
   comms:    'temporal',    // language & memory
   content:  'occipital',   // visual / creative output
-  ops:      'cerebellum',  // coordination
-  meta:     'brainstem',   // the autonomic, system-level stuff
+  ops:      'parietal',    // coordination — slot here without cerebellum
+  meta:     'frontal',     // system-level — slot with main
 };
 
 function lobeFor(entry: HiveEntry): Lobe {
@@ -149,20 +139,13 @@ function rng(seed: number): () => number {
 
 interface Pt { x: number; y: number }
 
-// Per-lobe pool of valid positions, filled once on mount and reused
-// every render. Dots are slotted in entry-order so layout is stable
-// across polls — new entries take new slots, removed entries vacate.
 type LobePools = Record<string, Pt[]>;
 
-function generateLobePools(
-  cerebrum: SVGPathElement,
-  cerebellum: SVGPathElement,
-  brainstem: SVGPathElement,
-): LobePools {
+function generateLobePools(cerebrum: SVGPathElement): LobePools {
   const pools: LobePools = {};
   const r = rng(0xb14b);
   for (const lobe of LOBES) {
-    const target = lobe.id === 'brainstem' ? 24 : lobe.id === 'cerebellum' ? 60 : 120;
+    const target = 140;
     const pts: Pt[] = [];
     let tries = 0;
     while (pts.length < target && tries < target * 60) {
@@ -170,15 +153,14 @@ function generateLobePools(
       const [x0, y0, w, h] = lobe.rect;
       const x = x0 + r() * w;
       const y = y0 + r() * h;
-      const insideAny =
-        (cerebrum as any).isPointInFill({ x, y }) ||
-        (cerebellum as any).isPointInFill({ x, y }) ||
-        (brainstem as any).isPointInFill({ x, y });
-      if (!insideAny) continue;
+      if (!(cerebrum as any).isPointInFill({ x, y })) continue;
+      // Keep dots a few px away from the longitudinal fissure so the
+      // midline stays visible.
+      if (Math.abs(x - 450) < 10) continue;
       let tooClose = false;
       for (const p of pts) {
         const dx = p.x - x, dy = p.y - y;
-        if (dx * dx + dy * dy < 11 * 11) { tooClose = true; break; }
+        if (dx * dx + dy * dy < 13 * 13) { tooClose = true; break; }
       }
       if (!tooClose) pts.push({ x, y });
     }
@@ -193,9 +175,9 @@ interface BrainFilters {
   query: string;
   hiddenAgents: Set<string>;
   hiddenLobes: Set<string>;
-  nodeSize: number;     // 0.5x .. 2x
-  edgeOpacity: number;  // 0 .. 1
-  tilt: number;         // -25 .. 25 (degrees rotateY)
+  nodeSize: number;
+  edgeOpacity: number;
+  tilt: number;
 }
 
 const DEFAULT_FILTERS: BrainFilters = {
@@ -211,8 +193,6 @@ const DEFAULT_FILTERS: BrainFilters = {
 
 export function BrainGraph({ entries, agentFilter, agentColors, blurOn }: Props) {
   const cerebrumRef = useRef<SVGPathElement>(null);
-  const cerebellumRef = useRef<SVGPathElement>(null);
-  const brainstemRef = useRef<SVGPathElement>(null);
   const wrapRef = useRef<HTMLDivElement>(null);
 
   const [pools, setPools] = useState<LobePools>({});
@@ -222,15 +202,18 @@ export function BrainGraph({ entries, agentFilter, agentColors, blurOn }: Props)
   const [selected, setSelected] = useState<HiveEntry | null>(null);
   const [filters, setFilters] = useState<BrainFilters>(DEFAULT_FILTERS);
   const [animateNonce, setAnimateNonce] = useState(0);
+  const [panelOpen, setPanelOpen] = useState(false);
 
   useEffect(() => {
-    if (!cerebrumRef.current || !cerebellumRef.current || !brainstemRef.current) return;
-    setPools(generateLobePools(cerebrumRef.current, cerebellumRef.current, brainstemRef.current));
+    if (!cerebrumRef.current) return;
+    setPools(generateLobePools(cerebrumRef.current));
   }, []);
 
-  // Group entries by lobe and slot them into the pre-computed pools.
-  // Entries are already newest-first from the API, so the brightest
-  // dot in each lobe is the most recent activity.
+  // Auto-open the panel when the user clicks a dot, so detail shows.
+  useEffect(() => {
+    if (selected) setPanelOpen(true);
+  }, [selected]);
+
   const placed = useMemo(() => {
     const lobeIndex: Record<string, number> = {};
     const out: Array<HiveEntry & { pt: Pt; lobe: string }> = [];
@@ -245,8 +228,6 @@ export function BrainGraph({ entries, agentFilter, agentColors, blurOn }: Props)
     return out;
   }, [entries, pools]);
 
-  // Edges within the same chat_id and within 30 minutes — same logic
-  // as before. Drawn beneath the dots.
   const edges = useMemo(() => {
     const out: Array<{ a: number; b: number; agent: string }> = [];
     const byChat = new Map<string, number[]>();
@@ -293,6 +274,8 @@ export function BrainGraph({ entries, agentFilter, agentColors, blurOn }: Props)
     return counts;
   }, [entries]);
 
+  const visibleEntryCount = useMemo(() => placed.filter(isVisible).length, [placed, filters, agentFilter]);
+
   function update<K extends keyof BrainFilters>(key: K, value: BrainFilters[K]) {
     setFilters((f) => ({ ...f, [key]: value }));
   }
@@ -305,13 +288,13 @@ export function BrainGraph({ entries, agentFilter, agentColors, blurOn }: Props)
   }
 
   return (
-    <div class="flex-1 flex min-h-0">
+    <div class="flex-1 flex min-h-0 relative">
       <div
         ref={wrapRef}
         class="brain-stage flex-1 relative overflow-hidden"
         style={{
           background:
-            'radial-gradient(ellipse 70% 60% at 50% 45%, color-mix(in srgb, var(--color-accent) 6%, transparent), transparent 70%), var(--color-bg)',
+            'radial-gradient(ellipse 80% 70% at 50% 45%, color-mix(in srgb, var(--color-accent) 9%, transparent), transparent 75%), radial-gradient(ellipse 40% 30% at 30% 70%, color-mix(in srgb, #5eb6ff 4%, transparent), transparent 70%), var(--color-bg)',
         }}
         onMouseMove={handleMove}
       >
@@ -323,16 +306,16 @@ export function BrainGraph({ entries, agentFilter, agentColors, blurOn }: Props)
         >
           <defs>
             <radialGradient id="brainFill" cx="50%" cy="42%" r="60%">
-              <stop offset="0%" stop-color="color-mix(in srgb, var(--color-accent) 28%, transparent)" />
-              <stop offset="55%" stop-color="color-mix(in srgb, var(--color-accent) 8%, transparent)" />
+              <stop offset="0%" stop-color="color-mix(in srgb, var(--color-accent) 32%, transparent)" />
+              <stop offset="55%" stop-color="color-mix(in srgb, var(--color-accent) 10%, transparent)" />
               <stop offset="100%" stop-color="transparent" />
             </radialGradient>
-            <radialGradient id="brainGlow" cx="50%" cy="48%" r="70%">
-              <stop offset="0%" stop-color="var(--color-accent)" stop-opacity="0.12" />
+            <radialGradient id="brainHalo" cx="50%" cy="48%" r="70%">
+              <stop offset="0%" stop-color="var(--color-accent)" stop-opacity="0.16" />
               <stop offset="100%" stop-color="transparent" />
             </radialGradient>
             <filter id="dotGlow" x="-100%" y="-100%" width="300%" height="300%">
-              <feGaussianBlur stdDeviation="3" />
+              <feGaussianBlur stdDeviation="3.2" />
             </filter>
             <filter id="softGlow" x="-50%" y="-50%" width="200%" height="200%">
               <feGaussianBlur stdDeviation="1.4" />
@@ -343,81 +326,51 @@ export function BrainGraph({ entries, agentFilter, agentColors, blurOn }: Props)
             </filter>
             {LOBES.map((l) => (
               <radialGradient key={l.id} id={`lobeGlow-${l.id}`} cx="50%" cy="50%" r="55%">
-                <stop offset="0%" stop-color={l.color} stop-opacity="0.22" />
+                <stop offset="0%" stop-color={l.color} stop-opacity="0.24" />
                 <stop offset="100%" stop-color={l.color} stop-opacity="0" />
               </radialGradient>
             ))}
             <clipPath id="brainClip">
               <path d={CEREBRUM_PATH} />
-              <path d={CEREBELLUM_PATH} />
-              <path d={BRAINSTEM_PATH} />
             </clipPath>
           </defs>
 
           {/* Backlit halo behind the brain */}
-          <ellipse cx={VIEW_W / 2} cy={250} rx={300} ry={210} fill="url(#brainGlow)" />
+          <ellipse cx={VIEW_W / 2} cy={250} rx={340} ry={230} fill="url(#brainHalo)" />
 
-          {/* Lobe glows — only visible when that lobe is hovered/active */}
+          {/* Lobe glows on hover */}
           <g clip-path="url(#brainClip)">
-            {LOBES.map((l) => {
-              const active = hoverLobe === l.id;
-              return (
-                <ellipse
-                  key={l.id}
-                  cx={l.rect[0] + l.rect[2] / 2}
-                  cy={l.rect[1] + l.rect[3] / 2}
-                  rx={l.rect[2] * 0.7}
-                  ry={l.rect[3] * 0.9}
-                  fill={`url(#lobeGlow-${l.id})`}
-                  opacity={active ? 1 : 0}
-                  style={{ transition: 'opacity 220ms ease-out' }}
-                />
-              );
-            })}
+            {LOBES.map((l) => (
+              <ellipse
+                key={l.id}
+                cx={l.rect[0] + l.rect[2] / 2}
+                cy={l.rect[1] + l.rect[3] / 2}
+                rx={l.rect[2] * 0.7}
+                ry={l.rect[3] * 0.95}
+                fill={`url(#lobeGlow-${l.id})`}
+                opacity={hoverLobe === l.id ? 1 : 0}
+                style={{ transition: 'opacity 220ms ease-out' }}
+              />
+            ))}
           </g>
 
-          {/* Brain silhouette fills */}
+          {/* Brain silhouette fill */}
           <path
             ref={cerebrumRef}
             d={CEREBRUM_PATH}
             fill="url(#brainFill)"
           />
-          <path
-            ref={cerebellumRef}
-            d={CEREBELLUM_PATH}
-            fill="url(#brainFill)"
-            opacity="0.85"
-          />
-          <path
-            ref={brainstemRef}
-            d={BRAINSTEM_PATH}
-            fill="url(#brainFill)"
-            opacity="0.7"
-          />
 
-          {/* Cerebellar folia (decorative striations) */}
-          <g clip-path="url(#brainClip)" opacity="0.35">
-            {FOLIA.map((f, i) => (
-              <line
-                key={i}
-                x1={f.x1} y1={f.y}
-                x2={f.x2} y2={f.y}
-                stroke="var(--color-border-strong)"
-                stroke-width="0.6"
-              />
-            ))}
-          </g>
-
-          {/* Sulci (decorative) */}
-          <g opacity="0.45">
-            {SULCI.map((d, i) => (
+          {/* Sulci — clipped to brain so they never escape the outline */}
+          <g clip-path="url(#brainClip)" opacity="0.55">
+            {[...SULCI_LEFT, ...SULCI_RIGHT].map((d, i) => (
               <path
                 key={i}
                 d={d}
                 fill="none"
-                stroke="var(--color-border-strong)"
-                stroke-width="0.6"
-                stroke-dasharray="2 4"
+                stroke="color-mix(in srgb, var(--color-accent) 42%, var(--color-text-faint))"
+                stroke-width="0.9"
+                stroke-linecap="round"
               />
             ))}
           </g>
@@ -426,41 +379,23 @@ export function BrainGraph({ entries, agentFilter, agentColors, blurOn }: Props)
           <path
             d={FISSURE_PATH}
             fill="none"
-            stroke="var(--color-border-strong)"
-            stroke-width="0.8"
-            stroke-dasharray="2 5"
-            opacity="0.6"
+            stroke="color-mix(in srgb, var(--color-accent) 50%, var(--color-text-faint))"
+            stroke-width="1.1"
+            stroke-linecap="round"
+            opacity="0.7"
           />
 
-          {/* Animated outline strokes — drawn last so they sit on top */}
+          {/* Animated outline draw-in */}
           <path
             d={CEREBRUM_PATH}
             fill="none"
-            stroke="color-mix(in srgb, var(--color-accent) 60%, var(--color-text))"
-            stroke-width="1"
-            opacity="0.7"
+            stroke="color-mix(in srgb, var(--color-accent) 70%, var(--color-text))"
+            stroke-width="1.2"
+            opacity="0.85"
             class="brain-outline-anim"
-          />
-          <path
-            d={CEREBELLUM_PATH}
-            fill="none"
-            stroke="color-mix(in srgb, var(--color-accent) 60%, var(--color-text))"
-            stroke-width="1"
-            opacity="0.6"
-            class="brain-outline-anim"
-            style={{ animationDelay: '350ms' }}
-          />
-          <path
-            d={BRAINSTEM_PATH}
-            fill="none"
-            stroke="color-mix(in srgb, var(--color-accent) 60%, var(--color-text))"
-            stroke-width="0.9"
-            opacity="0.55"
-            class="brain-outline-anim"
-            style={{ animationDelay: '600ms' }}
           />
 
-          {/* Lobe labels — clickable to toggle visibility */}
+          {/* Lobe labels */}
           {LOBES.map((l) => {
             const hidden = filters.hiddenLobes.has(l.id);
             return (
@@ -480,7 +415,7 @@ export function BrainGraph({ entries, agentFilter, agentColors, blurOn }: Props)
             );
           })}
 
-          {/* Edges (drawn first so dots sit on top) */}
+          {/* Edges */}
           <g style={{ opacity: filters.edgeOpacity }}>
             {edges.map((edge, i) => {
               const a = placed[edge.a];
@@ -488,12 +423,10 @@ export function BrainGraph({ entries, agentFilter, agentColors, blurOn }: Props)
               if (!a || !b) return null;
               const visible = isVisible(a) && isVisible(b);
               const color = agentColors[edge.agent] || 'var(--color-text-muted)';
-              // Quadratic bezier with control point pulled slightly toward
-              // the brain center so curves arc rather than cut straight.
               const mx = (a.pt.x + b.pt.x) / 2;
               const my = (a.pt.y + b.pt.y) / 2;
-              const cx = mx + (VIEW_W / 2 - mx) * 0.15;
-              const cy = my + (250 - my) * 0.15;
+              const cx = mx + (VIEW_W / 2 - mx) * 0.18;
+              const cy = my + (250 - my) * 0.18;
               return (
                 <path
                   key={i}
@@ -515,27 +448,25 @@ export function BrainGraph({ entries, agentFilter, agentColors, blurOn }: Props)
               const isHovered = hovered === entry.id;
               const isSelected = selected?.id === entry.id;
               const color = agentColors[entry.agent_id] || 'var(--color-text-muted)';
-              const r = (isHovered || isSelected ? 5.2 : 3.4) * filters.nodeSize;
+              const r = (isHovered || isSelected ? 5.4 : 3.5) * filters.nodeSize;
               return (
                 <g
                   key={entry.id}
                   class="brain-dot-bloom"
-                  style={{ animationDelay: `${Math.min(i * 18, 2400)}ms` }}
+                  style={{ animationDelay: `${Math.min(i * 16, 2200)}ms` }}
                   onMouseEnter={() => setHovered(entry.id)}
                   onMouseLeave={() => setHovered((h) => (h === entry.id ? null : h))}
                   onClick={() => setSelected(entry)}
                 >
-                  {/* Outer halo */}
                   <circle
                     cx={entry.pt.x}
                     cy={entry.pt.y}
-                    r={r * 3}
+                    r={r * 3.2}
                     fill={color}
-                    opacity={visible ? (isHovered ? 0.35 : 0.15) : 0.04}
+                    opacity={visible ? (isHovered ? 0.4 : 0.18) : 0.04}
                     filter="url(#dotGlow)"
-                    style={{ transition: 'opacity 200ms, r 180ms', pointerEvents: 'none' }}
+                    style={{ transition: 'opacity 200ms', pointerEvents: 'none' }}
                   />
-                  {/* Main dot */}
                   <circle
                     cx={entry.pt.x}
                     cy={entry.pt.y}
@@ -546,13 +477,12 @@ export function BrainGraph({ entries, agentFilter, agentColors, blurOn }: Props)
                     stroke-width={isHovered || isSelected ? 0.9 : 0}
                     style={{ cursor: 'pointer', transition: 'r 180ms, opacity 200ms' }}
                   />
-                  {/* Inner highlight */}
                   <circle
                     cx={entry.pt.x - r * 0.3}
                     cy={entry.pt.y - r * 0.3}
-                    r={r * 0.35}
+                    r={r * 0.36}
                     fill="white"
-                    opacity={visible ? (isHovered ? 0.85 : 0.5) : 0.1}
+                    opacity={visible ? (isHovered ? 0.9 : 0.55) : 0.1}
                     style={{ pointerEvents: 'none', transition: 'opacity 200ms' }}
                   />
                 </g>
@@ -588,17 +518,40 @@ export function BrainGraph({ entries, agentFilter, agentColors, blurOn }: Props)
             </div>
           </div>
         )}
+
+        {/* Floating filter button — visible only when panel is closed */}
+        {!panelOpen && (
+          <button
+            type="button"
+            onClick={() => setPanelOpen(true)}
+            class="absolute top-4 right-4 inline-flex items-center gap-2 px-3 py-1.5 rounded-full bg-[var(--color-card)]/90 backdrop-blur border border-[var(--color-border)] hover:border-[var(--color-accent)] text-[11.5px] text-[var(--color-text)] shadow-lg transition-colors"
+            style={{ backdropFilter: 'blur(8px)' }}
+          >
+            <SlidersHorizontal size={12} />
+            Filters
+            <span class="text-[10.5px] text-[var(--color-text-faint)] tabular-nums">
+              {visibleEntryCount}
+            </span>
+          </button>
+        )}
       </div>
 
-      {/* Right side panel */}
-      <aside class="w-[320px] border-l border-[var(--color-border)] bg-[var(--color-card)] flex flex-col min-h-0">
+      {/* Right-side panel — slides in from the right */}
+      <aside
+        class={[
+          'absolute top-0 right-0 bottom-0 w-[320px] bg-[var(--color-card)] border-l border-[var(--color-border)] flex flex-col min-h-0 shadow-2xl z-20',
+          'transition-transform duration-300 ease-out',
+          panelOpen ? 'translate-x-0' : 'translate-x-full',
+        ].join(' ')}
+        style={{ backdropFilter: 'blur(8px)' }}
+      >
         {selected ? (
           <DetailPanel
             entry={selected}
             color={agentColors[selected.agent_id] || 'var(--color-text-muted)'}
             blurOn={blurOn}
             lobeLabel={LOBE_BY_ID[AGENT_LOBE[selected.agent_id] || 'frontal']?.label}
-            onClose={() => setSelected(null)}
+            onClose={() => { setSelected(null); setPanelOpen(false); }}
           />
         ) : (
           <FilterPanel
@@ -610,7 +563,8 @@ export function BrainGraph({ entries, agentFilter, agentColors, blurOn }: Props)
             onAnimate={() => setAnimateNonce((n) => n + 1)}
             onReset={() => setFilters(DEFAULT_FILTERS)}
             totalEntries={entries.length}
-            visibleEntries={placed.filter(isVisible).length}
+            visibleEntries={visibleEntryCount}
+            onClose={() => setPanelOpen(false)}
           />
         )}
       </aside>
@@ -688,7 +642,7 @@ function Field({ label, children }: { label: string; children: any }) {
 // ── Filter panel ─────────────────────────────────────────────────────
 
 function FilterPanel({
-  filters, update, toggleHidden, visibleAgents, agentColors, onAnimate, onReset, totalEntries, visibleEntries,
+  filters, update, toggleHidden, visibleAgents, agentColors, onAnimate, onReset, totalEntries, visibleEntries, onClose,
 }: {
   filters: BrainFilters;
   update: <K extends keyof BrainFilters>(key: K, value: BrainFilters[K]) => void;
@@ -699,11 +653,12 @@ function FilterPanel({
   onReset: () => void;
   totalEntries: number;
   visibleEntries: number;
+  onClose: () => void;
 }) {
   const [openSection, setOpenSection] = useState({
     agents: true,
-    lobes: true,
-    display: true,
+    lobes: false,
+    display: false,
   });
   return (
     <>
@@ -716,15 +671,22 @@ function FilterPanel({
         <button
           type="button"
           onClick={onReset}
-          class="text-[10.5px] text-[var(--color-text-muted)] hover:text-[var(--color-text)]"
+          class="p-1 rounded hover:bg-[var(--color-elevated)] text-[var(--color-text-muted)] hover:text-[var(--color-text)] transition-colors"
           title="Reset all filters"
         >
           <RotateCw size={11} />
         </button>
+        <button
+          type="button"
+          onClick={onClose}
+          class="p-1 rounded hover:bg-[var(--color-elevated)] text-[var(--color-text-muted)] hover:text-[var(--color-text)] transition-colors"
+          title="Close panel"
+        >
+          <X size={13} />
+        </button>
       </header>
 
       <div class="flex-1 overflow-y-auto px-4 py-3 space-y-4">
-        {/* Search */}
         <div>
           <div class="relative">
             <Search size={12} class="absolute left-2.5 top-1/2 -translate-y-1/2 text-[var(--color-text-faint)]" />
@@ -737,7 +699,6 @@ function FilterPanel({
           </div>
         </div>
 
-        {/* Agents */}
         <Section
           label="Agents"
           open={openSection.agents}
@@ -763,7 +724,7 @@ function FilterPanel({
                     @{id}
                   </span>
                   {lobe && (
-                    <span class="text-[10px] text-[var(--color-text-faint)]" style={{ color: on ? lobe.color : undefined, opacity: on ? 0.7 : 0.4 }}>
+                    <span class="text-[10px]" style={{ color: on ? lobe.color : 'var(--color-text-faint)', opacity: on ? 0.75 : 0.4 }}>
                       {lobe.label.toLowerCase()}
                     </span>
                   )}
@@ -775,7 +736,6 @@ function FilterPanel({
           </div>
         </Section>
 
-        {/* Lobes */}
         <Section
           label="Regions"
           open={openSection.lobes}
@@ -809,7 +769,6 @@ function FilterPanel({
           </div>
         </Section>
 
-        {/* Display */}
         <Section
           label="Display"
           open={openSection.display}
@@ -819,25 +778,19 @@ function FilterPanel({
             <SliderRow
               label="Node size"
               value={filters.nodeSize}
-              min={0.5}
-              max={2}
-              step={0.05}
+              min={0.5} max={2} step={0.05}
               onInput={(v) => update('nodeSize', v)}
             />
             <SliderRow
               label="Edge opacity"
               value={filters.edgeOpacity}
-              min={0}
-              max={1}
-              step={0.05}
+              min={0} max={1} step={0.05}
               onInput={(v) => update('edgeOpacity', v)}
             />
             <SliderRow
               label="Tilt"
               value={filters.tilt}
-              min={-25}
-              max={25}
-              step={1}
+              min={-25} max={25} step={1}
               onInput={(v) => update('tilt', v)}
               fmt={(v) => `${v}°`}
             />
@@ -883,9 +836,7 @@ function SliderRow({
 }: {
   label: string;
   value: number;
-  min: number;
-  max: number;
-  step: number;
+  min: number; max: number; step: number;
   onInput: (v: number) => void;
   fmt?: (v: number) => string;
 }) {
@@ -900,9 +851,7 @@ function SliderRow({
       <input
         type="range"
         class="brain-slider"
-        min={min}
-        max={max}
-        step={step}
+        min={min} max={max} step={step}
         value={value}
         onInput={(e) => onInput(parseFloat((e.target as HTMLInputElement).value))}
       />
