@@ -425,6 +425,7 @@ function applyActivityGlow(
   brainGeos: BrainGeoSnapshot[],
   activityByLobe: Record<string, number>,
   maxActivity: number,
+  hoveredLobe: string | null,
 ) {
   if (brainGeos.length === 0) return;
   for (const geo of brainGeos) {
@@ -436,15 +437,18 @@ function applyActivityGlow(
     for (let i = 0; i < lobeIds.length; i++) {
       const lobeId = lobeIds[i];
       const activity = activityByLobe[lobeId] || 0;
-      // Quiet lobes stay near base color (1.0×); active lobes ramp up
-      // to ~2.4× brightness with a soft curve so the gradient between
-      // lobes feels natural. Ceiling at 2.2 keeps the bloom from
-      // bleeding outside the brain silhouette.
       const t = maxActivity > 0 ? activity / maxActivity : 0;
-      const boost = 1.0 + Math.pow(t, 0.6) * 1.4;
-      arr[i * 3]     = Math.min(2.2, base[i * 3]     * boost);
-      arr[i * 3 + 1] = Math.min(2.2, base[i * 3 + 1] * boost);
-      arr[i * 3 + 2] = Math.min(2.2, base[i * 3 + 2] * boost);
+      // Strong baseline (1.6×) so every lobe reads as lit, with a
+      // softer activity curve on top. The squashed curve keeps the
+      // gradient between active and quiet lobes visible without
+      // letting the busiest lobe blow out the bloom.
+      let boost = 1.6 + Math.pow(t, 0.5) * 0.9;
+      if (hoveredLobe && lobeId === hoveredLobe) {
+        boost *= 1.4;
+      }
+      arr[i * 3]     = Math.min(2.4, base[i * 3]     * boost);
+      arr[i * 3 + 1] = Math.min(2.4, base[i * 3 + 1] * boost);
+      arr[i * 3 + 2] = Math.min(2.4, base[i * 3 + 2] * boost);
     }
     colorAttr.needsUpdate = true;
   }
@@ -525,6 +529,9 @@ export function BrainGraph3D({ entries, agentFilter, agentColors, blurOn }: Prop
   const [filters, setFilters] = useState<BrainFilters>(DEFAULT_FILTERS);
   const [panelOpen, setPanelOpen] = useState(false);
   const [ready, setReady] = useState(false);
+  // Which lobe the cursor is currently over (drives the per-lobe
+  // highlight and the hover-time stats card with its pie chart).
+  const [hoveredLobe, setHoveredLobe] = useState<string | null>(null);
 
   // Refs so the rAF animate loop can read the latest hovered/selected
   // without re-binding the loop on every state change.
@@ -613,13 +620,11 @@ export function BrainGraph3D({ entries, agentFilter, agentColors, blurOn }: Prop
     composer.addPass(new RenderPass(scene, camera));
     const bloom = new UnrealBloomPass(
       new THREE.Vector2(w, h),
-      0.35, // strength — moderate; the activity-glow vertex colors
-            // already exceed 1.0 in HDR territory so bloom amplifies
-            // them on top.
-      0.40, // radius — tight so the glow stays close to the brain
-            // outline instead of bleeding into empty space
-      0.75, // threshold — only the saturated activity-lit lobes bloom,
-            // the rest of the cortex stays grounded
+      0.22, // strength — conservative; the brain itself is bright
+            // enough now that minimal bloom keeps the lobe colors
+            // crisp without bleeding red/orange into empty space
+      0.30, // radius — tight halo
+      0.85, // threshold — only the brightest peak lobes bloom
     );
     composer.addPass(bloom);
     composer.addPass(new OutputPass());
@@ -865,8 +870,8 @@ export function BrainGraph3D({ entries, agentFilter, agentColors, blurOn }: Prop
       activity[lobe] = (activity[lobe] || 0) + 1;
     }
     const maxActivity = Math.max(1, ...Object.values(activity));
-    applyActivityGlow(state.brainGeos, activity, maxActivity);
-  }, [entries, ready, filters.hiddenAgents, filters.hiddenLobes, filters.query, agentFilter]);
+    applyActivityGlow(state.brainGeos, activity, maxActivity, hoveredLobe);
+  }, [entries, ready, filters.hiddenAgents, filters.hiddenLobes, filters.query, agentFilter, hoveredLobe]);
 
   // Apply visibility (agent / lobe / search filter) without rebuilding meshes.
   useEffect(() => {
@@ -895,7 +900,8 @@ export function BrainGraph3D({ entries, agentFilter, agentColors, blurOn }: Prop
     });
   }, [filters.hiddenAgents, filters.hiddenLobes, filters.query, agentFilter]);
 
-  // Pointer move → raycast against dots
+  // Pointer move → raycast against dots first (specific entry), then
+  // against the brain mesh (which lobe is under the cursor).
   function handleMove(e: MouseEvent) {
     const state = sceneStateRef.current;
     if (!state || !wrapRef.current) return;
@@ -907,16 +913,38 @@ export function BrainGraph3D({ entries, agentFilter, agentColors, blurOn }: Prop
     state.pointer.x = (cx / rect.width) * 2 - 1;
     state.pointer.y = -(cy / rect.height) * 2 + 1;
     state.raycaster.setFromCamera(state.pointer, state.camera);
+
+    // 1) Specific entry hit (invisible dot meshes)
     const dotMeshes = Array.from(state.dotMap.keys());
-    const hits = state.raycaster.intersectObjects(dotMeshes, false);
-    if (hits.length > 0) {
-      const data = state.dotMap.get(hits[0].object);
+    const dotHits = state.raycaster.intersectObjects(dotMeshes, false);
+    if (dotHits.length > 0) {
+      const data = state.dotMap.get(dotHits[0].object);
       if (data) {
         setHovered(data.entry.id);
+        // Also lift the lobe glow so the hovered entry's region brightens.
+        setHoveredLobe(data.entry.lobe);
         return;
       }
     }
     setHovered(null);
+
+    // 2) Lobe hit (the brain mesh)
+    if (state.brainGeos.length > 0) {
+      const meshes = state.brainGeos.map((g) => g.mesh);
+      const meshHits = state.raycaster.intersectObjects(meshes, false);
+      if (meshHits.length > 0 && meshHits[0].face) {
+        const hit = meshHits[0];
+        const geo = state.brainGeos.find((g) => g.mesh === hit.object);
+        if (geo) {
+          const lobeId = geo.vertexLobeIds[hit.face!.a];
+          if (lobeId) {
+            setHoveredLobe(lobeId);
+            return;
+          }
+        }
+      }
+    }
+    setHoveredLobe(null);
   }
 
   function handleClick() {
@@ -1049,6 +1077,18 @@ export function BrainGraph3D({ entries, agentFilter, agentColors, blurOn }: Prop
               {hoveredEntry.summary}
             </div>
           </div>
+        )}
+
+        {/* Lobe hover stats — only when not hovering a specific entry. */}
+        {!hoveredEntry && hoveredLobe && mousePos && !selected && (
+          <LobeStatsTooltip
+            lobeId={hoveredLobe}
+            entries={entries}
+            agentColors={agentColors}
+            mousePos={mousePos}
+            wrapWidth={wrapRef.current?.clientWidth || 800}
+            wrapHeight={wrapRef.current?.clientHeight || 500}
+          />
         )}
       </div>
 
@@ -1247,5 +1287,136 @@ function SliderRow({ label, value, min, max, step, onInput, fmt }: { label: stri
       </div>
       <input type="range" class="brain-slider" min={min} max={max} step={step} value={value} onInput={(e) => onInput(parseFloat((e.target as HTMLInputElement).value))} />
     </div>
+  );
+}
+
+// ── Lobe hover stats ─────────────────────────────────────────────────
+// Each lobe stands in for a "function" of the brain. Hovering shows
+// what that lobe is currently full of: total entry count + a small
+// agent-distribution pie chart.
+
+const LOBE_FUNCTION: Record<string, string> = {
+  frontal:   'Decisions & planning',
+  parietal:  'Sensing & integration',
+  temporal:  'Language & memory',
+  occipital: 'Output & creation',
+};
+
+function LobeStatsTooltip({
+  lobeId, entries, agentColors, mousePos, wrapWidth, wrapHeight,
+}: {
+  lobeId: string;
+  entries: HiveEntry[];
+  agentColors: Record<string, string>;
+  mousePos: { x: number; y: number };
+  wrapWidth: number;
+  wrapHeight: number;
+}) {
+  const lobe = LOBE_BY_ID[lobeId];
+  if (!lobe) return null;
+
+  // Tally entries that map to this lobe, grouped by agent.
+  const byAgent: Record<string, number> = {};
+  let total = 0;
+  for (const e of entries) {
+    if (lobeFor(e.agent_id) !== lobeId) continue;
+    byAgent[e.agent_id] = (byAgent[e.agent_id] || 0) + 1;
+    total++;
+  }
+  const slices = Object.entries(byAgent).sort((a, b) => b[1] - a[1]);
+
+  return (
+    <div
+      class="absolute pointer-events-none bg-[var(--color-card)]/95 border border-[var(--color-border)] rounded-lg shadow-xl p-3 text-[12px] text-[var(--color-text)] z-10"
+      style={{
+        left: Math.min(mousePos.x + 14, wrapWidth - 230),
+        top: Math.min(mousePos.y + 14, wrapHeight - 200),
+        backdropFilter: 'blur(8px)',
+        width: 220,
+      }}
+    >
+      <div class="flex items-center gap-2 mb-1">
+        <span
+          class="inline-block w-2 h-2 rounded-full"
+          style={{ backgroundColor: `#${lobe.color.getHexString()}` }}
+        />
+        <span class="font-semibold">{lobe.label}</span>
+        <span class="ml-auto text-[10.5px] text-[var(--color-text-faint)] tabular-nums">{total}</span>
+      </div>
+      <div class="text-[10.5px] uppercase tracking-wider text-[var(--color-text-faint)] mb-2">
+        {LOBE_FUNCTION[lobeId] || lobe.label}
+      </div>
+      {total === 0 ? (
+        <div class="text-[11px] text-[var(--color-text-faint)]">No activity yet in this region.</div>
+      ) : (
+        <div class="flex items-center gap-3">
+          <LobePie slices={slices} agentColors={agentColors} />
+          <div class="flex-1 space-y-1 min-w-0">
+            {slices.slice(0, 4).map(([agentId, count]) => (
+              <div key={agentId} class="flex items-center gap-1.5 text-[10.5px]">
+                <span
+                  class="inline-block w-1.5 h-1.5 rounded-full shrink-0"
+                  style={{ backgroundColor: agentColors[agentId] || 'var(--color-text-muted)' }}
+                />
+                <span class="font-mono truncate text-[var(--color-text-muted)]">@{agentId}</span>
+                <span class="ml-auto tabular-nums text-[var(--color-text-faint)]">{count}</span>
+              </div>
+            ))}
+            {slices.length > 4 && (
+              <div class="text-[10px] text-[var(--color-text-faint)]">
+                +{slices.length - 4} more
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function LobePie({
+  slices, agentColors,
+}: {
+  slices: [string, number][];
+  agentColors: Record<string, string>;
+}) {
+  const total = slices.reduce((sum, [, c]) => sum + c, 0);
+  const cx = 32, cy = 32, r = 28;
+  let acc = 0;
+  // Resolve CSS-var colors once for SVG fill (Three.js path resolves
+  // them too; SVG can use them directly but only if they're real CSS
+  // refs, which is fine for our case).
+  function color(agent: string) {
+    const raw = agentColors[agent] || '#888';
+    if (raw.startsWith('var(')) {
+      const m = raw.match(/var\((--[^)]+)\)/);
+      if (m) {
+        const v = getComputedStyle(document.documentElement).getPropertyValue(m[1]).trim();
+        if (v) return v;
+      }
+    }
+    return raw;
+  }
+  return (
+    <svg width="64" height="64" viewBox="0 0 64 64" class="shrink-0">
+      <circle cx={cx} cy={cy} r={r} fill="var(--color-bg)" stroke="var(--color-border)" stroke-width="0.5" />
+      {slices.map(([agentId, count], i) => {
+        const startAngle = (acc / total) * 2 * Math.PI - Math.PI / 2;
+        const endAngle = ((acc + count) / total) * 2 * Math.PI - Math.PI / 2;
+        acc += count;
+        const x1 = cx + r * Math.cos(startAngle);
+        const y1 = cy + r * Math.sin(startAngle);
+        const x2 = cx + r * Math.cos(endAngle);
+        const y2 = cy + r * Math.sin(endAngle);
+        const largeArc = endAngle - startAngle > Math.PI ? 1 : 0;
+        // Single-slice case: draw a filled circle instead of an arc
+        // (an arc with start === end would render nothing).
+        if (slices.length === 1) {
+          return <circle key={agentId} cx={cx} cy={cy} r={r} fill={color(agentId)} />;
+        }
+        const d = `M ${cx},${cy} L ${x1},${y1} A ${r},${r} 0 ${largeArc} 1 ${x2},${y2} Z`;
+        return <path key={agentId} d={d} fill={color(agentId)} stroke="var(--color-bg)" stroke-width="0.5" />;
+      })}
+    </svg>
   );
 }
