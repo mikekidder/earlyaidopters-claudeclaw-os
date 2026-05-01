@@ -4,6 +4,7 @@ import { apiPatch } from '@/lib/api';
 import { pushToast } from '@/lib/toasts';
 import { useFetch } from '@/lib/useFetch';
 import { describeCron } from '@/lib/cron';
+import { ScheduleBuilder } from '@/components/ScheduleBuilder';
 
 interface ScheduledTask {
   id: string;
@@ -114,18 +115,14 @@ export function EditTaskModal({ open, task, onClose, onSaved }: Props) {
 
         <div>
           <label class="block text-[10.5px] uppercase tracking-wider text-[var(--color-text-faint)] mb-1.5">
-            Schedule (cron)
+            Schedule
           </label>
-          <input
-            value={schedule}
-            onInput={(e) => setSchedule((e.target as HTMLInputElement).value)}
-            spellcheck={false}
-            class="w-full px-3 py-2 rounded bg-[var(--color-bg)] border border-[var(--color-border)] focus:border-[var(--color-accent)] focus:outline-none text-[12.5px] text-[var(--color-text)] font-mono"
+          <ScheduleBuilder
+            cron={schedule}
+            onChange={setSchedule}
+            externalError={cronPreview.ok ? null : cronPreview.text}
           />
-          <div class={'mt-1.5 text-[11px] ' + (cronPreview.ok ? 'text-[var(--color-text-faint)]' : 'text-[var(--color-status-failed)]')}>
-            {cronPreview.text}
-          </div>
-          <div class="mt-2 flex flex-wrap gap-1.5">
+          <div class="mt-3 flex flex-wrap gap-1.5">
             {PRESETS.map((p) => (
               <button
                 key={p.cron}
