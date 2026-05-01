@@ -436,13 +436,15 @@ function applyActivityGlow(
     for (let i = 0; i < lobeIds.length; i++) {
       const lobeId = lobeIds[i];
       const activity = activityByLobe[lobeId] || 0;
-      // Quadratic ramp so very active lobes pop dramatically while
-      // moderate activity stays subtle.
+      // Quiet lobes stay near base color (1.0×); active lobes ramp up
+      // to ~2.4× brightness with a soft curve so the gradient between
+      // lobes feels natural. Ceiling at 2.2 keeps the bloom from
+      // bleeding outside the brain silhouette.
       const t = maxActivity > 0 ? activity / maxActivity : 0;
-      const boost = 1 + Math.pow(t, 0.7) * 1.6;
-      arr[i * 3]     = Math.min(2.0, base[i * 3]     * boost);
-      arr[i * 3 + 1] = Math.min(2.0, base[i * 3 + 1] * boost);
-      arr[i * 3 + 2] = Math.min(2.0, base[i * 3 + 2] * boost);
+      const boost = 1.0 + Math.pow(t, 0.6) * 1.4;
+      arr[i * 3]     = Math.min(2.2, base[i * 3]     * boost);
+      arr[i * 3 + 1] = Math.min(2.2, base[i * 3 + 1] * boost);
+      arr[i * 3 + 2] = Math.min(2.2, base[i * 3 + 2] * boost);
     }
     colorAttr.needsUpdate = true;
   }
@@ -611,11 +613,13 @@ export function BrainGraph3D({ entries, agentFilter, agentColors, blurOn }: Prop
     composer.addPass(new RenderPass(scene, camera));
     const bloom = new UnrealBloomPass(
       new THREE.Vector2(w, h),
-      0.30, // strength — bumped up now that the brain mesh has more
-            // surface area to absorb the glow without blowing dots out.
-      0.55, // radius — softer falloff so the glow feels diffuse
-      0.85, // threshold — slightly lower so emissive lobes start to
-            // bloom too, not just peak-firing dots
+      0.35, // strength — moderate; the activity-glow vertex colors
+            // already exceed 1.0 in HDR territory so bloom amplifies
+            // them on top.
+      0.40, // radius — tight so the glow stays close to the brain
+            // outline instead of bleeding into empty space
+      0.75, // threshold — only the saturated activity-lit lobes bloom,
+            // the rest of the cortex stays grounded
     );
     composer.addPass(bloom);
     composer.addPass(new OutputPass());
@@ -878,10 +882,16 @@ export function BrainGraph3D({ entries, agentFilter, agentColors, blurOn }: Prop
         const q = filters.query.toLowerCase();
         if (!e.summary.toLowerCase().includes(q) && !e.action.toLowerCase().includes(q)) visible = false;
       }
+      // Dots are visualized via vertex-color glow now, not as actual
+      // sphere meshes. Keep their opacity at 0 always; they stay alive
+      // only as raycast targets for hover/click.
       const dotMat = d.mesh.material as THREE.MeshBasicMaterial;
       const haloMat = d.halo.material as THREE.MeshBasicMaterial;
-      dotMat.opacity = visible ? 1 : 0.12;
-      haloMat.opacity = visible ? 0.18 : 0.04;
+      dotMat.opacity = 0;
+      haloMat.opacity = 0;
+      // Mark whether the entry is visually active so the activity
+      // glow effect (which reads filters separately) can react.
+      void visible;
     });
   }, [filters.hiddenAgents, filters.hiddenLobes, filters.query, agentFilter]);
 
