@@ -56,17 +56,31 @@ export function Usage() {
             {showCosts.value && <KpiCard label="Lifetime cost" value={formatCost(stats.allTimeCost)} />}
           </div>
 
-          {timeline.length > 0 && showCosts.value && (
-            <div class="bg-[var(--color-card)] border border-[var(--color-border)] rounded-lg p-4">
-              <div class="flex items-center justify-between mb-3">
-                <div class="text-[10px] uppercase tracking-wider text-[var(--color-text-faint)]">30-day cost</div>
-                <div class="text-[10px] text-[var(--color-text-muted)] tabular-nums">
-                  {formatCost(timeline.reduce((a, b) => a + b.cost, 0))} · {formatNumber(timeline.reduce((a, b) => a + b.turns, 0))} turns
+          {showCosts.value && (() => {
+            const totalCost = timeline.reduce((a, b) => a + b.cost, 0);
+            const totalTurns = timeline.reduce((a, b) => a + b.turns, 0);
+            const hasData = timeline.length > 0 && totalCost > 0;
+            return (
+              <div class="bg-[var(--color-card)] border border-[var(--color-border)] rounded-lg p-4">
+                <div class="flex items-center justify-between mb-3">
+                  <div class="text-[10px] uppercase tracking-wider text-[var(--color-text-faint)]">30-day cost</div>
+                  <div class="text-[10px] text-[var(--color-text-muted)] tabular-nums">
+                    {hasData ? `${formatCost(totalCost)} · ${formatNumber(totalTurns)} turns` : 'no activity yet'}
+                  </div>
                 </div>
+                {hasData ? (
+                  <Sparkline data={timeline} />
+                ) : (
+                  <div class="py-10 text-center">
+                    <div class="text-[12px] text-[var(--color-text-muted)] mb-1">No cost data in the last 30 days</div>
+                    <div class="text-[11px] text-[var(--color-text-faint)]">
+                      Charts populate once your agents start running turns. Send a message in Chat or talk to your bot in Telegram.
+                    </div>
+                  </div>
+                )}
               </div>
-              <Sparkline data={timeline} />
-            </div>
-          )}
+            );
+          })()}
 
           {health.data && (
             <div class="grid grid-cols-2 gap-3">

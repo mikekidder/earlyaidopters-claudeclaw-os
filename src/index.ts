@@ -12,6 +12,7 @@ import { logger } from './logger.js';
 import { cleanupOldUploads } from './media.js';
 import { runConsolidation } from './memory-consolidate.js';
 import { runDecaySweep } from './memory.js';
+import { runWarroomAvatarMigration } from './avatars.js';
 import { initOAuthHealthCheck } from './oauth-health.js';
 import { initOrchestrator } from './orchestrator.js';
 import { initScheduler } from './scheduler.js';
@@ -152,6 +153,12 @@ async function main(): Promise<void> {
     runDecaySweep();
     cleanupOldMissionTasks(7);
     setInterval(() => { runDecaySweep(); cleanupOldMissionTasks(7); }, 24 * 60 * 60 * 1000);
+
+    // One-time bundled→mutable avatar migration. After this lands, any
+    // previously user-uploaded main avatar that we wrote into the
+    // bundled namespace gets copied into STORE_DIR/avatars/main.png so
+    // the new resolver serves it as the mutable source-of-truth.
+    runWarroomAvatarMigration();
 
     // Memory consolidation: find patterns across recent memories every 30 minutes
     if (ALLOWED_CHAT_ID && GOOGLE_API_KEY) {

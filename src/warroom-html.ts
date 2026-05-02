@@ -704,23 +704,23 @@ export function getWarRoomHtml(token: string, chatId: string, warroomPort: numbe
     <div class="table-surface"></div>
     <div class="table-rim"></div>
     <div class="stage-avatar" data-agent="main" style="--seat-x:0px;--seat-y:-150px">
-      <img src="/warroom-avatar/main?token=${safeToken}" alt="Main">
+      <img src="/api/agents/main/avatar?token=${safeToken}" alt="Main">
       <div class="stage-nameplate">MAIN</div>
     </div>
     <div class="stage-avatar" data-agent="research" style="--seat-x:-250px;--seat-y:-40px">
-      <img src="/warroom-avatar/research?token=${safeToken}" alt="Research">
+      <img src="/api/agents/research/avatar?token=${safeToken}" alt="Research">
       <div class="stage-nameplate">RESEARCH</div>
     </div>
     <div class="stage-avatar" data-agent="comms" style="--seat-x:250px;--seat-y:-40px">
-      <img src="/warroom-avatar/comms?token=${safeToken}" alt="Comms">
+      <img src="/api/agents/comms/avatar?token=${safeToken}" alt="Comms">
       <div class="stage-nameplate">COMMS</div>
     </div>
     <div class="stage-avatar" data-agent="content" style="--seat-x:-165px;--seat-y:135px">
-      <img src="/warroom-avatar/content?token=${safeToken}" alt="Content">
+      <img src="/api/agents/content/avatar?token=${safeToken}" alt="Content">
       <div class="stage-nameplate">CONTENT</div>
     </div>
     <div class="stage-avatar" data-agent="ops" style="--seat-x:165px;--seat-y:135px">
-      <img src="/warroom-avatar/ops?token=${safeToken}" alt="Ops">
+      <img src="/api/agents/ops/avatar?token=${safeToken}" alt="Ops">
       <div class="stage-nameplate">OPS</div>
     </div>
   </div>
@@ -1546,7 +1546,8 @@ function loadAgentCards() {
         card.id = 'agent-' + agent.id;
         card.setAttribute('data-agent', agent.id);
         card.onclick = function(){ togglePin(agent.id); };
-        card.innerHTML = '<div class="agent-avatar"><img src="/warroom-avatar/' + encodeURIComponent(agent.id) + '?token=' + encodeURIComponent(TOKEN) + '" alt="' + safeName + '" style="width:100%;height:100%;object-fit:cover;border-radius:50%" onerror="this.style.display=\\'none\\'"></div>'
+        var avatarV = agent.avatar_etag ? ('&v=' + encodeURIComponent(agent.avatar_etag)) : '';
+        card.innerHTML = '<div class="agent-avatar"><img src="/api/agents/' + encodeURIComponent(agent.id) + '/avatar?token=' + encodeURIComponent(TOKEN) + avatarV + '" alt="' + safeName + '" style="width:100%;height:100%;object-fit:cover;border-radius:50%" onerror="this.style.display=\\'none\\'"></div>'
           + '<div class="agent-info"><div class="agent-name">' + safeName + '</div><div class="agent-role">' + safeRole + '</div></div>'
           + '<div class="agent-indicator" id="status-' + safeAgentIdAttr + '"></div>';
         // Fade in

@@ -42,6 +42,8 @@ import {
   saveWarRoomConversationTurn,
   insertAuditLog,
   saveTokenUsage,
+  getDashboardSetting,
+  logToHiveMind,
 } from './db.js';
 import { buildMemoryContext } from './memory.js';
 import { ingestConversationTurn } from './memory-ingest.js';
@@ -842,27 +844,158 @@ function parseSlashCommand(text: string): SlashCommand | null {
   return { cmd, args };
 }
 
-// Canonical slash-command roster order. Members of this list lead in the
-// listed order; any other configured agents in the roster come after in
-// roster-order. Total speakers capped at SLASH_MAX_SPEAKERS so the queue
-// watchdog (300s) doesn't fire mid-sequence.
+// Canonical slash-command roster order. The four sub-agents and main
+// lead the order so a stock install always runs research → ops → comms
+// → content → main. Any agent NOT in this list (e.g. user-added agents
+// like 'meta') falls in afterward in roster order, but is NOT skipped
+// just because it isn't canonical — the previous SLASH_MAX_SPEAKERS=5
+// cap silently dropped the 6th agent, which felt broken to users
+// adding new agents.
 const SLASH_CANONICAL_ORDER = ['research', 'ops', 'comms', 'content', 'main'];
-const SLASH_MAX_SPEAKERS = 5;
-// Per-agent budget inside /standup and /discuss. Was 45s, but SDK cold
-// start + memory build + first few tokens routinely costs ~30-40s, leaving
-// only 5-15s for actual generation — agents would silently time out with
-// no content. 55s gives headroom while staying under the 300s queue
-// watchdog (5 speakers × 55s = 275s, with 25s buffer).
-const SLASH_AGENT_BUDGET_MS = 55_000;
 
-function pickSlashRoster(roster: RosterAgent[]): { speakers: string[]; skipped: string[] } {
+// Hard ceiling. /standup runs sequentially, so total wall time scales
+// with speaker count. The dashboard watchdog gives each meeting turn
+// 300s before forcing an abort (see dashboard.ts:1057). At 8 agents and
+// the dynamic per-agent budget computed below, we stay safely under
+// that ceiling. Rosters bigger than 8 are rare; if you hit it, add
+// follow-up /standup runs or raise this cap and the watchdog together.
+const SLASH_HARD_CAP = 8;
+
+// Total budget across all speakers in a single slash-command turn.
+// 270s leaves 30s headroom under the 300s queue watchdog for SDK
+// startup, transcript I/O, queue overhead, and the final wrap-up.
+const SLASH_TURN_BUDGET_MS = 270_000;
+// Per-agent floor/ceiling. Below 30s, an agent that hits a cold SDK
+// will silently time out. Above 65s, even a 4-agent /standup would
+// not fit the watchdog if everyone burned their full budget.
+const SLASH_AGENT_BUDGET_MIN_MS = 30_000;
+const SLASH_AGENT_BUDGET_MAX_MS = 65_000;
+
+interface StandupConfigPersisted {
+  /** Agents in user-chosen order. Disabled entries are kept in the
+   *  list (so the UI can preserve order) but excluded from speakers. */
+  agents: Array<{ id: string; enabled: boolean }>;
+  /** Cap on simultaneous speakers in a /standup or /discuss. Clamped
+   *  by the loader to [1, SLASH_HARD_CAP] before use. */
+  maxSpeakers: number;
+}
+
+/** Read the user's saved /standup roster choice from dashboard_settings.
+ *  Returns null if no config saved or if the JSON is malformed —
+ *  callers fall back to the canonical order in that case. */
+function loadStandupConfig(): StandupConfigPersisted | null {
+  try {
+    const raw = getDashboardSetting('standup_config');
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    if (!parsed || !Array.isArray(parsed.agents)) return null;
+    const agents = parsed.agents
+      .filter((a: any) => a && typeof a.id === 'string')
+      .map((a: any) => ({ id: a.id, enabled: a.enabled !== false }));
+    if (agents.length === 0) return null;
+    const max = Number(parsed.maxSpeakers);
+    const maxSpeakers = Number.isFinite(max) ? max : SLASH_HARD_CAP;
+    return { agents, maxSpeakers };
+  } catch {
+    return null;
+  }
+}
+
+// In-memory rotation offset per meeting, so successive /standup calls
+// cycle through agents that overflow the cap instead of replaying the
+// same first N every time. Resets when the meeting ends (process-local
+// state; meeting IDs aren't reused). Addresses Codex T1-2 finding.
+const standupOffsetByMeeting = new Map<string, number>();
+
+function dedupePreserveOrder(ids: string[]): string[] {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const id of ids) {
+    if (seen.has(id)) continue;
+    seen.add(id);
+    out.push(id);
+  }
+  return out;
+}
+
+function pickSlashRoster(
+  roster: RosterAgent[],
+  opts: { forceOrder?: string[]; meetingId?: string } = {},
+): { speakers: string[]; skipped: string[]; budgetMs: number; adhoc: boolean } {
   const rosterIds = new Set(roster.map((r) => r.id));
-  const canonical = SLASH_CANONICAL_ORDER.filter((id) => rosterIds.has(id));
-  const others = roster.map((r) => r.id).filter((id) => !SLASH_CANONICAL_ORDER.includes(id));
-  const ordered = [...canonical, ...others];
-  const speakers = ordered.slice(0, SLASH_MAX_SPEAKERS);
-  const skipped = ordered.slice(SLASH_MAX_SPEAKERS);
-  return { speakers, skipped };
+
+  // Path A: explicit @-mention roster from the slash command (e.g.
+  // "/standup @meta @research"). Overrides saved config and canonical
+  // order entirely. The dedupe and roster-filter still run so a typo
+  // in @id is silently ignored, matching how mentions work elsewhere.
+  if (opts.forceOrder && opts.forceOrder.length > 0) {
+    const ordered = dedupePreserveOrder(opts.forceOrder).filter((id) => rosterIds.has(id));
+    const cap = SLASH_HARD_CAP;
+    const speakers = ordered.slice(0, cap);
+    const skipped = ordered.slice(cap);
+    const speakerCount = Math.max(1, speakers.length);
+    const rawBudget = Math.floor(SLASH_TURN_BUDGET_MS / speakerCount);
+    const budgetMs = Math.max(SLASH_AGENT_BUDGET_MIN_MS, Math.min(SLASH_AGENT_BUDGET_MAX_MS, rawBudget));
+    return { speakers, skipped, budgetMs, adhoc: true };
+  }
+
+  const config = loadStandupConfig();
+
+  let ordered: string[];
+  let cap = SLASH_HARD_CAP;
+
+  if (config) {
+    // User has chosen a custom order + enabled set. Filter to what's
+    // still in the roster (an agent might have been deleted since the
+    // config was saved). Append any roster agents NOT mentioned in the
+    // config so a brand-new agent shows up at the bottom by default
+    // instead of vanishing. Dedupe defends against a manually-patched
+    // setting that has duplicate ids (Codex T1-1).
+    const known = new Set(config.agents.map((a) => a.id));
+    const fromConfig = config.agents
+      .filter((a) => a.enabled && rosterIds.has(a.id))
+      .map((a) => a.id);
+    const newcomers = roster.map((r) => r.id).filter((id) => !known.has(id));
+    ordered = dedupePreserveOrder([...fromConfig, ...newcomers]);
+    cap = Math.max(1, Math.min(SLASH_HARD_CAP, Math.floor(config.maxSpeakers)));
+  } else {
+    // No saved config — default to canonical order with all roster
+    // agents that aren't canonical appended in roster order.
+    const canonical = SLASH_CANONICAL_ORDER.filter((id) => rosterIds.has(id));
+    const others = roster.map((r) => r.id).filter((id) => !SLASH_CANONICAL_ORDER.includes(id));
+    ordered = dedupePreserveOrder([...canonical, ...others]);
+  }
+
+  // Cycle through over-cap agents on successive /standup calls in the
+  // same meeting. With 12 agents enabled and cap=8, calls 1, 2 cover
+  // [0..7] and [8..11, 0..3]; the wrap is intentional so an agent
+  // never gets permanently stranded.
+  let speakers: string[];
+  let skipped: string[];
+  if (ordered.length <= cap) {
+    speakers = ordered;
+    skipped = [];
+  } else if (opts.meetingId) {
+    const offset = (standupOffsetByMeeting.get(opts.meetingId) ?? 0) % ordered.length;
+    speakers = [];
+    for (let i = 0; i < cap; i++) speakers.push(ordered[(offset + i) % ordered.length]);
+    standupOffsetByMeeting.set(opts.meetingId, (offset + cap) % ordered.length);
+    // Everyone not in this batch is "skipped" for this turn.
+    const inBatch = new Set(speakers);
+    skipped = ordered.filter((id) => !inBatch.has(id));
+  } else {
+    speakers = ordered.slice(0, cap);
+    skipped = ordered.slice(cap);
+  }
+
+  // Per-agent budget scales with speaker count so the total fits
+  // inside the watchdog. With pre-warm enabled, agents 2..N hit a hot
+  // SDK and don't need the full cold-start window, so a tighter
+  // budget at higher speaker counts is fine.
+  const speakerCount = Math.max(1, speakers.length);
+  const rawBudget = Math.floor(SLASH_TURN_BUDGET_MS / speakerCount);
+  const budgetMs = Math.max(SLASH_AGENT_BUDGET_MIN_MS, Math.min(SLASH_AGENT_BUDGET_MAX_MS, rawBudget));
+  return { speakers, skipped, budgetMs, adhoc: false };
 }
 
 interface SlashHandlerArgs {
@@ -882,7 +1015,13 @@ interface SlashHandlerArgs {
 
 async function handleStandup(args: SlashHandlerArgs): Promise<void> {
   const { meetingId, turnId, channel, roster, rosterById, cancelFlag, turnState } = args;
-  const { speakers, skipped } = pickSlashRoster(roster);
+  // Inline ad-hoc roster: "/standup @meta @research" runs only those.
+  // Falls back to saved config when no @-mentions follow the command.
+  const adhocMentions = extractAllAtMentions(args.userText, roster);
+  const { speakers, skipped, budgetMs, adhoc } = pickSlashRoster(roster, {
+    forceOrder: adhocMentions.length > 0 ? adhocMentions : undefined,
+    meetingId,
+  });
   // Fire-and-forget parallel SDK warmup for every speaker. Speakers 2-N
   // hit a hot SDK by the time their turn fires, dropping their cold-start
   // cost from ~10-15s to ~1s. The first speaker still pays cold start but
@@ -897,10 +1036,16 @@ async function handleStandup(args: SlashHandlerArgs): Promise<void> {
     channel.emit({ type: 'turn_complete', turnId });
     return;
   }
-  if (skipped.length > 0) {
+  if (adhoc) {
     channel.emit({
       type: 'system_note', turnId,
-      text: `/standup runs the first ${SLASH_MAX_SPEAKERS} agents. Skipped: ${skipped.map((id) => rosterById.get(id)?.name ?? id).join(', ')}.`,
+      text: `Ad-hoc roster: ${speakers.map((id) => rosterById.get(id)?.name ?? id).join(' → ')}. Saved standup config ignored for this run.`,
+      tone: 'info', dismissable: true,
+    });
+  } else if (skipped.length > 0) {
+    channel.emit({
+      type: 'system_note', turnId,
+      text: `Skipped ${skipped.length} agent${skipped.length === 1 ? '' : 's'} this round: ${skipped.map((id) => rosterById.get(id)?.name ?? id).join(', ')}. The cap is ${SLASH_HARD_CAP} per turn — run /standup again to cycle them in, or use /standup @agent to pick directly.`,
       tone: 'info', dismissable: true,
     });
   }
@@ -932,7 +1077,7 @@ async function handleStandup(args: SlashHandlerArgs): Promise<void> {
       originalUserText: args.userText,
       role,
       turnId, channel, cancelFlag, turnState,
-      roleBudgetMs: SLASH_AGENT_BUDGET_MS,
+      roleBudgetMs: budgetMs,
     });
   }
   channel.emit({ type: 'turn_complete', turnId });
@@ -940,23 +1085,34 @@ async function handleStandup(args: SlashHandlerArgs): Promise<void> {
 
 async function handleDiscuss(args: SlashHandlerArgs): Promise<void> {
   const { meetingId, turnId, channel, roster, rosterById, cancelFlag, turnState } = args;
-  // Same parallel pre-warm trick as /standup.
-  const { speakers: allSpeakers } = pickSlashRoster(roster);
-  prewarmAgentSDKs(allSpeakers);
-  // Strip the "/discuss" prefix from userText to extract the topic. The
-  // verbatim slash command is what was persisted as the user row; here
-  // we pull just the topic to seed each agent's prompt.
-  const topic = args.userText.replace(/^\/discuss\s*/i, '').trim();
+  // Inline ad-hoc roster: "/discuss @ops @comms should we ship X" runs
+  // only those, on topic "should we ship X". @-mentions are stripped
+  // from the topic before it's handed to each agent.
+  const adhocMentions = extractAllAtMentions(args.userText, roster);
+  const { speakers, skipped, budgetMs, adhoc } = pickSlashRoster(roster, {
+    forceOrder: adhocMentions.length > 0 ? adhocMentions : undefined,
+    meetingId,
+  });
+  prewarmAgentSDKs(speakers);
+  // Strip "/discuss" plus any @-mentions to recover the topic text.
+  let topic = args.userText.replace(/^\/discuss\s*/i, '').trim();
+  if (adhocMentions.length > 0) {
+    topic = topic
+      .replace(/(?:^|[\s,(\[{:;])@[a-z][a-z0-9_-]{0,29}\b/gi, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+  }
   if (!topic) {
     channel.emit({
       type: 'system_note', turnId,
-      text: 'Usage: /discuss <topic>',
+      text: adhocMentions.length > 0
+        ? 'Usage: /discuss @agent <topic> — include the topic after the @-mentions.'
+        : 'Usage: /discuss <topic>',
       tone: 'warn', dismissable: true,
     });
     channel.emit({ type: 'turn_complete', turnId });
     return;
   }
-  const { speakers, skipped } = pickSlashRoster(roster);
   if (speakers.length === 0) {
     channel.emit({
       type: 'system_note', turnId,
@@ -966,10 +1122,16 @@ async function handleDiscuss(args: SlashHandlerArgs): Promise<void> {
     channel.emit({ type: 'turn_complete', turnId });
     return;
   }
-  if (skipped.length > 0) {
+  if (adhoc) {
     channel.emit({
       type: 'system_note', turnId,
-      text: `/discuss runs the first ${SLASH_MAX_SPEAKERS} agents. Skipped: ${skipped.map((id) => rosterById.get(id)?.name ?? id).join(', ')}.`,
+      text: `Ad-hoc roster: ${speakers.map((id) => rosterById.get(id)?.name ?? id).join(' → ')}. Saved standup config ignored for this run.`,
+      tone: 'info', dismissable: true,
+    });
+  } else if (skipped.length > 0) {
+    channel.emit({
+      type: 'system_note', turnId,
+      text: `Skipped ${skipped.length} agent${skipped.length === 1 ? '' : 's'} this round: ${skipped.map((id) => rosterById.get(id)?.name ?? id).join(', ')}. The cap is ${SLASH_HARD_CAP} per turn — run /discuss again to cycle them in, or use /discuss @agent to pick directly.`,
       tone: 'info', dismissable: true,
     });
   }
@@ -999,7 +1161,7 @@ async function handleDiscuss(args: SlashHandlerArgs): Promise<void> {
       originalUserText: args.userText,
       role,
       turnId, channel, cancelFlag, turnState,
-      roleBudgetMs: SLASH_AGENT_BUDGET_MS,
+      roleBudgetMs: budgetMs,
     });
   }
   channel.emit({ type: 'turn_complete', turnId });
@@ -1771,6 +1933,22 @@ async function runAgentTurn(args: RunAgentTurnArgs): Promise<string> {
         void ingestConversationTurn(meetingChatId, ingestText, finalText, agentId).catch((err) => {
           logger.warn({ err: err instanceof Error ? err.message : err, agentId, meetingId }, 'war-room memory ingestion failed');
         });
+
+        // Hive-mind row for the team rail / Hive Mind page. Without
+        // this, agents only used in War Room (or via /standup) end
+        // up with empty hive ledgers — exactly the "Content has zero
+        // entries" failure the user spotted. Dedupe via the
+        // assistantInserted check so retry replays don't double-log.
+        // Floor on length filters out one-word "ok" / "noted" replies
+        // that aren't worth surfacing in the activity feed.
+        if (finalText.trim().length >= 25) {
+          try {
+            const action = role === 'primary' ? 'warroom_reply' : 'warroom_chime_in';
+            logToHiveMind(agentId, meetingChatId, action, finalText.slice(0, 280));
+          } catch (err) {
+            logger.warn({ err: err instanceof Error ? err.message : err, agentId, meetingId }, 'logToHiveMind from warroom failed');
+          }
+        }
       }
     } catch (err) {
       logger.warn({ err: err instanceof Error ? err.message : err, agentId, meetingId }, 'saveWarRoomConversationTurn failed');

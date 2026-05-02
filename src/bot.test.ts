@@ -197,11 +197,27 @@ describe('extractFileMarkers', () => {
 
   // ── Edge cases ────────────────────────────────────────────────────
 
-  it('does not match malformed markers (missing brackets)', () => {
+  it('extracts unbracketed markers with absolute paths', () => {
+    // The dashboard demo failed when an agent emitted a marker
+    // without surrounding brackets (`SEND_PHOTO|https://...`). The
+    // tolerant matcher now extracts those so the chat doesn't show
+    // the raw command string. We require an absolute path or a URL
+    // so unrelated prose like "SEND_FILE:later" doesn't match.
     const input = 'SEND_FILE:/tmp/report.pdf';
     const result = extractFileMarkers(input);
-    expect(result.files).toEqual([]);
-    expect(result.text).toBe(input);
+    expect(result.files).toHaveLength(1);
+    expect(result.files[0]).toMatchObject({ type: 'document', filePath: '/tmp/report.pdf' });
+  });
+
+  it('extracts unbracketed SEND_PHOTO with pipe and http URL', () => {
+    const input = 'Here it is. SEND_PHOTO|https://example.com/photo.png|nice shot';
+    const result = extractFileMarkers(input);
+    expect(result.files).toHaveLength(1);
+    expect(result.files[0]).toMatchObject({
+      type: 'photo',
+      filePath: 'https://example.com/photo.png',
+      caption: 'nice shot',
+    });
   });
 
   it('does not match unknown marker types', () => {

@@ -29,13 +29,18 @@ export function setTelegramConnected(v: boolean): void {
 // ── Chat event bus (SSE broadcasting) ────────────────────────────────
 
 export interface ChatEvent {
-  type: 'user_message' | 'assistant_message' | 'processing' | 'progress' | 'error' | 'hive_mind';
+  type: 'user_message' | 'assistant_message' | 'assistant_photo' | 'processing' | 'progress' | 'error' | 'hive_mind';
   chatId: string;
   agentId?: string;
   content?: string;
   source?: 'telegram' | 'dashboard';
   description?: string;
   processing?: boolean;
+  // Inline photo payload — emitted alongside assistant_message when the
+  // agent reply included a [SEND_PHOTO|http(s) URL] marker. The chat
+  // SPA renders this as an <img> bubble.
+  url?: string;
+  caption?: string;
   timestamp: number;
 }
 

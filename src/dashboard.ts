@@ -70,6 +70,15 @@ import { generateContent, parseJsonResponse } from './gemini.js';
 import { getSecurityStatus } from './security.js';
 import { listAgentIds, loadAgentConfig, resolveAgentDir, setAgentModel } from './agent-config.js';
 import {
+  resolveAgentAvatar,
+  avatarEtag,
+  avatarEtagForId,
+  tryFetchTelegramAvatar,
+  writeUploadedAvatar,
+  deleteUploadedAvatar,
+  getMutableAvatarPath,
+} from './avatars.js';
+import {
   listTemplates,
   validateAgentId,
   validateBotToken,
@@ -552,19 +561,13 @@ export function buildDashboardApp(botApi?: Api<RawApi>): Hono {
     });
   });
 
-  // Serve War Room agent avatars
-  app.get('/warroom-avatar/:id', (c) => {
-    const agentId = c.req.param('id').replace(/[^a-z0-9_-]/g, '');
-    const avatarPath = path.join(PROJECT_ROOT, 'warroom', 'avatars', `${agentId}.png`);
-    if (!fs.existsSync(avatarPath)) return c.text('', 404);
-    const data = fs.readFileSync(avatarPath);
-    return new Response(data, {
-      // 60s so user-uploaded avatars (which target this same file for
-      // main) propagate quickly across all dashboard surfaces. Higher
-      // miss rate is fine — the file is small.
-      headers: { 'Content-Type': 'image/png', 'Cache-Control': 'public, max-age=60' },
-    });
-  });
+  // The legacy /warroom-avatar/:id route used to live here. It read
+  // ONLY from warroom/avatars/<id>.png (bundled art) and lived outside
+  // the /api/ token gate, so it could not safely fall back to per-agent
+  // mutable caches or trigger Telegram fetches without leaking those
+  // outside the auth boundary. All War Room views now hit the
+  // tokenized /api/agents/:id/avatar endpoint, which goes through the
+  // unified resolver in avatars.ts.
 
   // War Room API: meeting state management.
   // We deliberately do NOT return a ws_url here. Older versions of this
@@ -1887,9 +1890,13 @@ export function buildDashboardApp(botApi?: Api<RawApi>): Hono {
           running,
           todayTurns: stats.todayTurns,
           todayCost: stats.todayCost,
+          // Cache-bust token for <img> URLs across all surfaces. Derived
+          // from filesystem mtime+size of the resolved avatar — changes
+          // the moment a user upload or Telegram fetch lands.
+          avatar_etag: avatarEtagForId(id),
         };
       } catch {
-        return { id, name: id, description: '', model: 'unknown', running: false, todayTurns: 0, todayCost: 0 };
+        return { id, name: id, description: '', model: 'unknown', running: false, todayTurns: 0, todayCost: 0, avatar_etag: avatarEtagForId(id) };
       }
     });
 
@@ -1904,7 +1911,7 @@ export function buildDashboardApp(botApi?: Api<RawApi>): Hono {
     }
     const mainStats = getAgentTokenStats('main');
     const allAgents = [
-      { id: 'main', name: 'Main', description: 'Primary ClaudeClaw bot', model: 'claude-opus-4-6', running: mainRunning, todayTurns: mainStats.todayTurns, todayCost: mainStats.todayCost },
+      { id: 'main', name: 'Main', description: 'Primary ClaudeClaw bot', model: 'claude-opus-4-6', running: mainRunning, todayTurns: mainStats.todayTurns, todayCost: mainStats.todayCost, avatar_etag: avatarEtagForId('main') },
       ...agents,
     ];
 
@@ -2562,115 +2569,80 @@ export function buildDashboardApp(botApi?: Api<RawApi>): Hono {
     return c.json({ running: isAgentRunning(agentId) });
   });
 
-  // Lazy-fetch the agent's Telegram profile photo and cache it on disk.
-  // First request hits Telegram (getMe → photo file_id → getFile → download),
-  // subsequent requests serve directly from agents/<id>/avatar.png. Returns
-  // 204 if the bot has no photo set, 404 if the agent doesn't exist.
+  // Unified avatar resolver, used by Mission Control, both War Room
+  // surfaces, and the Daily.co spawner. Source priority lives in
+  // src/avatars.ts. ETag is mtime+size based, so the moment a user
+  // upload or Telegram fetch lands on disk, the next request picks up
+  // a new tag and the browser revalidates.
   app.get('/api/agents/:id/avatar', async (c) => {
     const agentId = c.req.param('id');
     if (!/^[a-z0-9_-]+$/i.test(agentId)) return c.text('', 400);
+    const ctxQ = c.req.query('context');
+    const context: 'default' | 'meet' = ctxQ === 'meet' ? 'meet' : 'default';
 
-    // First-class fallback: warroom/avatars/<id>.png is hand-curated art
-    // that exists for all canonical agents (main + the four sub-agents).
-    // We prefer it over the per-agent disk cache because the Telegram bot
-    // photo is often unset; the warroom asset always renders something.
-    const warroomAvatar = path.join(PROJECT_ROOT, 'warroom', 'avatars', `${agentId}.png`);
-    const serveWarroomAvatar = (): Response => {
-      const data = fs.readFileSync(warroomAvatar);
+    // Fast path: hit resolver, return file with ETag/304 support.
+    const serve = (): Response | undefined => {
+      const r = resolveAgentAvatar(agentId, { context });
+      if (!r) return undefined;
+      const etag = avatarEtag(r);
+      const ifNoneMatch = c.req.header('if-none-match');
+      if (ifNoneMatch && ifNoneMatch === etag) {
+        return new Response(null, {
+          status: 304,
+          headers: {
+            'ETag': etag,
+            'Cache-Control': 'no-cache, must-revalidate',
+          },
+        });
+      }
+      const data = fs.readFileSync(r.absPath);
+      // Sniff the magic bytes so JPEG/WebP uploads (PUT accepts both)
+      // are served with the correct Content-Type. The on-disk filename
+      // is always *.png by convention, but the bytes can be anything
+      // we accepted at upload time. Browsers cope either way; strict
+      // proxies and image processors do not.
+      let contentType = 'image/png';
+      if (data.length >= 12) {
+        if (data[0] === 0xff && data[1] === 0xd8 && data[2] === 0xff) {
+          contentType = 'image/jpeg';
+        } else if (
+          data[0] === 0x52 && data[1] === 0x49 && data[2] === 0x46 && data[3] === 0x46 &&
+          data[8] === 0x57 && data[9] === 0x45 && data[10] === 0x42 && data[11] === 0x50
+        ) {
+          contentType = 'image/webp';
+        }
+      }
       return new Response(new Uint8Array(data), {
-        headers: { 'Content-Type': 'image/png', 'Cache-Control': 'public, max-age=60' },
+        headers: {
+          'Content-Type': contentType,
+          'Cache-Control': 'no-cache, must-revalidate',
+          'ETag': etag,
+        },
       });
     };
 
-    // 'main' has no agent.yaml (the host process), so resolveAgentDir
-    // throws. Serve the warroom asset directly if present, else 404.
-    if (agentId === 'main') {
-      if (fs.existsSync(warroomAvatar)) return serveWarroomAvatar();
-      return c.text('', 404);
+    const fast = serve();
+    if (fast) return fast;
+
+    // No mutable file and no bundled fallback. For sub-agents we can
+    // try Telegram once (writes to mutable path on success). Main has
+    // no bot token of its own here, so we don't attempt.
+    if (agentId !== 'main') {
+      const fetched = await tryFetchTelegramAvatar(agentId);
+      if (fetched) {
+        const after = serve();
+        if (after) return after;
+      }
     }
 
-    let agentDir: string;
-    let botToken: string;
-    try {
-      agentDir = resolveAgentDir(agentId);
-      const cfg = loadAgentConfig(agentId);
-      botToken = cfg.botToken;
-    } catch {
-      // Agent isn't loadable yet (config in progress). Still serve the
-      // warroom asset if it exists rather than 404'ing the UI.
-      if (fs.existsSync(warroomAvatar)) return serveWarroomAvatar();
-      return c.text('', 404);
-    }
-
-    const cachePath = path.join(agentDir, 'avatar.png');
-    const noAvatarFlag = path.join(agentDir, '.no-avatar');
-
-    // Hot path: serve from disk cache (1h browser cache).
-    if (fs.existsSync(cachePath)) {
-      const data = fs.readFileSync(cachePath);
-      return new Response(new Uint8Array(data), {
-        headers: { 'Content-Type': 'image/png', 'Cache-Control': 'public, max-age=60' },
-      });
-    }
-    // Telegram said no photo previously. The flag has a 24h TTL so that
-    // a user who uploads a profile picture in BotFather later doesn't
-    // stay stuck on initials forever. If we're inside the TTL, fall
-    // back to the warroom asset (pretty placeholder) or 204.
-    const NO_AVATAR_TTL_MS = 24 * 60 * 60 * 1000;
-    if (fs.existsSync(noAvatarFlag)) {
-      const age = Date.now() - fs.statSync(noAvatarFlag).mtimeMs;
-      if (age < NO_AVATAR_TTL_MS) {
-        if (fs.existsSync(warroomAvatar)) return serveWarroomAvatar();
-        return c.body(null, 204);
-      }
-      // TTL elapsed — drop the flag and re-check Telegram below.
-      try { fs.unlinkSync(noAvatarFlag); } catch {}
-    }
-    if (!botToken) {
-      if (fs.existsSync(warroomAvatar)) return serveWarroomAvatar();
-      return c.text('', 404);
-    }
-
-    try {
-      // Telegram bots expose their profile photo via getMe (returns photo
-      // small/big file_ids when set). getFile turns the file_id into a
-      // downloadable file_path which we fetch and cache.
-      const meRes = await fetch(`https://api.telegram.org/bot${botToken}/getMe`);
-      const meJson: any = await meRes.json();
-      const smallId = meJson?.result?.photo?.small_file_id;
-      if (!smallId) {
-        try { fs.writeFileSync(noAvatarFlag, ''); } catch {}
-        if (fs.existsSync(warroomAvatar)) return serveWarroomAvatar();
-        return c.body(null, 204);
-      }
-      const fileRes = await fetch(`https://api.telegram.org/bot${botToken}/getFile?file_id=${encodeURIComponent(smallId)}`);
-      const fileJson: any = await fileRes.json();
-      const filePath = fileJson?.result?.file_path;
-      if (!filePath) {
-        if (fs.existsSync(warroomAvatar)) return serveWarroomAvatar();
-        return c.body(null, 204);
-      }
-      const dlRes = await fetch(`https://api.telegram.org/file/bot${botToken}/${filePath}`);
-      if (!dlRes.ok) {
-        if (fs.existsSync(warroomAvatar)) return serveWarroomAvatar();
-        return c.body(null, 204);
-      }
-      const buf = Buffer.from(await dlRes.arrayBuffer());
-      fs.writeFileSync(cachePath, buf);
-      return new Response(new Uint8Array(buf), {
-        headers: { 'Content-Type': 'image/png', 'Cache-Control': 'public, max-age=60' },
-      });
-    } catch (err) {
-      logger.warn({ err, agentId }, 'Failed to fetch avatar from Telegram');
-      if (fs.existsSync(warroomAvatar)) return serveWarroomAvatar();
-      return c.body(null, 204);
-    }
+    return c.body(null, 204);
   });
 
-  // Upload a custom avatar from the dashboard. Saves the image to the
-  // agent's directory (sub-agents) or warroom/avatars (main), where the
-  // GET endpoint above already serves it as the highest-priority source
-  // ahead of the Telegram getMe fallback. PNG / JPEG / WebP, 5 MB max.
+  // Upload a custom avatar from the dashboard. Always writes to the
+  // mutable, runtime-owned location (resolveAgentDir(id)/avatar.png for
+  // sub-agents, STORE_DIR/avatars/main.png for main). Never writes to
+  // warroom/avatars/ — that namespace stays bundled, immutable art.
+  // PNG / JPEG / WebP, 5 MB max.
   //
   // Telegram propagation is NOT possible via the Bot API — the bot's
   // profile picture can only be set by the bot owner through @BotFather
@@ -2678,23 +2650,13 @@ export function buildDashboardApp(botApi?: Api<RawApi>): Hono {
   app.put('/api/agents/:id/avatar', async (c) => {
     const agentId = c.req.param('id');
     if (!/^[a-z0-9_-]+$/i.test(agentId)) return c.json({ error: 'invalid id' }, 400);
-
-    // Pick the destination: main has no agents/main/ directory, so its
-    // avatar lives at warroom/avatars/main.png (the same fallback path
-    // the GET endpoint reads from). Sub-agents go to their own dir.
-    let target: string;
-    if (agentId === 'main') {
-      target = path.join(PROJECT_ROOT, 'warroom', 'avatars', 'main.png');
-    } else {
-      let agentDir: string;
-      try { agentDir = resolveAgentDir(agentId); }
+    if (agentId !== 'main') {
+      try { resolveAgentDir(agentId); }
       catch { return c.json({ error: 'agent not found' }, 404); }
-      target = path.join(agentDir, 'avatar.png');
     }
 
     // Two upload modes — multipart/form-data with `image` field, or
-    // application/octet-stream with the raw PNG bytes (handier for
-    // CLI testing). Both end up writing to `target`.
+    // application/octet-stream with the raw bytes (handier for CLI).
     let bytes: Buffer | null = null;
     const ct = c.req.header('content-type') || '';
     try {
@@ -2717,53 +2679,34 @@ export function buildDashboardApp(botApi?: Api<RawApi>): Hono {
     if (!bytes || bytes.length === 0) return c.json({ error: 'empty upload' }, 400);
     if (bytes.length > 5 * 1024 * 1024) return c.json({ error: 'image too large (max 5 MB)' }, 400);
 
-    // Magic-byte check — accept PNG, JPEG, WebP. Saving with .png
-    // extension is fine because the GET endpoint serves it as image/png
-    // and modern browsers happily render JPEG/WebP under that MIME too.
-    const sig = bytes.subarray(0, 12);
-    const isPng = sig[0] === 0x89 && sig[1] === 0x50 && sig[2] === 0x4e && sig[3] === 0x47;
-    const isJpeg = sig[0] === 0xff && sig[1] === 0xd8 && sig[2] === 0xff;
-    const isWebp = sig[0] === 0x52 && sig[1] === 0x49 && sig[2] === 0x46 && sig[3] === 0x46
-                && sig[8] === 0x57 && sig[9] === 0x45 && sig[10] === 0x42 && sig[11] === 0x50;
-    if (!isPng && !isJpeg && !isWebp) {
-      return c.json({ error: 'image must be PNG, JPEG, or WebP' }, 400);
-    }
-
     try {
-      fs.mkdirSync(path.dirname(target), { recursive: true });
-      fs.writeFileSync(target, bytes);
-      try { fs.chmodSync(target, 0o644); } catch {}
-      // Drop the .no-avatar sticky-fail flag if it was set so the GET
-      // path serves the new upload instead of the 24h cached "no photo".
-      if (agentId !== 'main') {
-        try {
-          const dir = resolveAgentDir(agentId);
-          const flag = path.join(dir, '.no-avatar');
-          if (fs.existsSync(flag)) fs.unlinkSync(flag);
-        } catch {}
-      }
+      const result = await writeUploadedAvatar(agentId, bytes);
       insertAuditLog(agentId, '', 'upload_avatar', `${bytes.length} bytes`, false);
-      return c.json({ ok: true, bytes: bytes.length, path: target });
-    } catch (err) {
-      logger.error({ err, agentId }, 'Failed to write avatar');
-      return c.json({ error: 'failed to save avatar' }, 500);
+      return c.json({
+        ok: true,
+        bytes: result.bytes,
+        path: result.absPath,
+        // Echo the new etag so the client can cache-bust render sites
+        // immediately without waiting for a list refresh.
+        avatar_etag: `${Math.floor(result.mtimeMs)}-${result.size}`,
+      });
+    } catch (err: any) {
+      const msg = (err && err.message) || 'failed to save avatar';
+      const code = msg.startsWith('image must be') ? 400 : 500;
+      if (code === 500) logger.error({ err, agentId }, 'Failed to write avatar');
+      return c.json({ error: msg }, code);
     }
   });
 
-  app.delete('/api/agents/:id/avatar', (c) => {
+  app.delete('/api/agents/:id/avatar', async (c) => {
     const agentId = c.req.param('id');
     if (!/^[a-z0-9_-]+$/i.test(agentId)) return c.json({ error: 'invalid id' }, 400);
-    let target: string;
-    if (agentId === 'main') {
-      target = path.join(PROJECT_ROOT, 'warroom', 'avatars', 'main.png');
-    } else {
-      let agentDir: string;
-      try { agentDir = resolveAgentDir(agentId); }
+    if (agentId !== 'main') {
+      try { resolveAgentDir(agentId); }
       catch { return c.json({ error: 'agent not found' }, 404); }
-      target = path.join(agentDir, 'avatar.png');
     }
     try {
-      if (fs.existsSync(target)) fs.unlinkSync(target);
+      await deleteUploadedAvatar(agentId);
       insertAuditLog(agentId, '', 'delete_avatar', '', false);
       return c.json({ ok: true });
     } catch (err) {
@@ -2786,6 +2729,11 @@ export function buildDashboardApp(botApi?: Api<RawApi>): Hono {
     'sidebar_collapsed_sections', // JSON array of section ids
     'mission_column_order', // JSON array of agent ids
     'mission_column_widths', // JSON object { id: px }
+    // JSON {agents: [{id, enabled}], maxSpeakers}. Drives /standup
+    // and /discuss in the text War Room — the user picks who's in,
+    // their order, and the cap. Read by pickSlashRoster() in
+    // src/warroom-text-orchestrator.ts. See web/src/pages/Standup.tsx.
+    'standup_config',
   ]);
   const SETTING_VALUE_MAX_BYTES = 4 * 1024;
 

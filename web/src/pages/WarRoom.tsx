@@ -1,11 +1,12 @@
 import { useState, useEffect } from 'preact/hooks';
 import { useLocation } from 'wouter-preact';
-import { Mic, MessageSquare, Video, ExternalLink, Pin, PinOff, Sliders } from 'lucide-preact';
+import { Mic, MessageSquare, Video, ExternalLink, Pin, PinOff, Sliders, Users } from 'lucide-preact';
 import { PageHeader, Tab } from '@/components/PageHeader';
 import { PageState } from '@/components/PageState';
 import { AgentAvatar } from '@/components/AgentAvatar';
 import { Pill } from '@/components/Pill';
 import { VoicesPane } from '@/pages/Voices';
+import { StandupConfigPane } from '@/pages/StandupConfig';
 import { useFetch } from '@/lib/useFetch';
 import { apiPost, dashboardToken, chatId, legacyUrl } from '@/lib/api';
 import { formatRelativeTime } from '@/lib/format';
@@ -14,7 +15,7 @@ import { formatRelativeTime } from '@/lib/format';
 // page at /voices, now folded under War Room since it conceptually
 // belongs there. Direct navigation to /voices still works (App.tsx
 // renders the standalone Voices page) for back-compat.
-type Mode = 'picker' | 'voice' | 'text' | 'meet' | 'voices';
+type Mode = 'picker' | 'voice' | 'text' | 'meet' | 'voices' | 'standup';
 
 interface PinState { ok: boolean; agent: string | null; mode: 'direct' | 'auto'; }
 interface RosterAgent { id: string; name: string; description: string; }
@@ -75,6 +76,12 @@ export function WarRoom() {
                 description="Per-agent Gemini Live voice picker. Used to be its own tab; now lives here under War Room."
                 onClick={() => setMode('voices')}
               />
+              <ModeCard
+                icon={<Users size={22} />}
+                title="Standup roster"
+                description="Pick which agents run /standup and /discuss, in what order, and how many speak per turn."
+                onClick={() => setMode('standup')}
+              />
               <ExternalCard
                 icon={<ExternalLink size={22} />}
                 title="Open in classic"
@@ -99,6 +106,7 @@ export function WarRoom() {
             <Tab label="Text" active={mode === 'text'} onClick={() => setMode('text')} />
             <Tab label="Live Meetings" active={mode === 'meet'} onClick={() => setMode('meet')} />
             <Tab label="Voice config" active={mode === 'voices'} onClick={() => setMode('voices')} />
+            <Tab label="Standup" active={mode === 'standup'} onClick={() => setMode('standup')} />
             <button
               type="button"
               onClick={() => setMode('picker')}
@@ -114,6 +122,7 @@ export function WarRoom() {
         {mode === 'text' && <TextPane />}
         {mode === 'meet' && <MeetPane />}
         {mode === 'voices' && <VoicesPane embedded />}
+        {mode === 'standup' && <StandupConfigPane />}
       </div>
     </div>
   );
@@ -122,7 +131,7 @@ export function WarRoom() {
 function readModeFromUrl(): Mode {
   try {
     const m = new URLSearchParams(window.location.search).get('mode');
-    if (m === 'voice' || m === 'text' || m === 'meet' || m === 'voices' || m === 'picker') return m;
+    if (m === 'voice' || m === 'text' || m === 'meet' || m === 'voices' || m === 'picker' || m === 'standup') return m;
   } catch {}
   return 'picker';
 }

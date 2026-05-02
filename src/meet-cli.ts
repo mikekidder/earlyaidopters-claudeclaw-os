@@ -45,6 +45,7 @@ import {
   type MeetSession,
 } from './db.js';
 import { loadAgentConfig, listAgentIds } from './agent-config.js';
+import { resolveAgentAvatar } from './avatars.js';
 import { readEnvFile } from './env.js';
 import { createRoom as dailyCreateRoom, deleteRoom as dailyDeleteRoom, DailyApiError } from './daily-client.js';
 
@@ -613,6 +614,21 @@ async function cmdJoinDaily(): Promise<void> {
     '--session-id', room!.id,
   ];
   if (briefPath) agentArgs.push('--brief', briefPath);
+
+  // Resolve the avatar Node-side and hand the Python process a fully
+  // qualified path. Python had its own AVATARS_DIR scan that only saw
+  // bundled meet art, so user-uploaded photos for sub-agents like
+  // 'meta' never made it into the camera-out tile. With this flag, the
+  // resolver in avatars.ts is the single source of truth across the
+  // dashboard, War Room HTML, and the Python video agent.
+  try {
+    const resolvedAvatar = resolveAgentAvatar(agentId, { context: 'meet' });
+    if (resolvedAvatar) {
+      agentArgs.push('--avatar-path', resolvedAvatar.absPath);
+    }
+  } catch (err) {
+    process.stderr.write(`[meet-cli] avatar resolve failed (non-fatal): ${err}\n`);
+  }
 
   // Strip CLAUDECODE* env vars so the Pipecat python subprocess doesn't
   // inherit a wrapping Claude Code session's env.

@@ -10,7 +10,7 @@ import { formatCost, formatNumber } from '@/lib/format';
 import { showCosts } from '@/lib/theme';
 import { subscribeChatStream, chatStreamConnected, resetUnread } from '@/lib/chat-stream';
 
-interface Turn { role: 'user' | 'assistant'; content: string; source?: string; created_at?: number; }
+interface Turn { role: 'user' | 'assistant'; content: string; source?: string; created_at?: number; photoUrl?: string; photoCaption?: string; }
 interface Agent { id: string; name: string; running: boolean; }
 
 interface AgentTokens { todayCost: number; todayTurns: number; allTimeCost: number; }
@@ -73,6 +73,16 @@ export function Chat() {
         setProcessing(false); setProgressLabel(null);
         health.refresh();
         if (activeAgent !== 'all') agentTokens.refresh();
+      } else if (eventName === 'assistant_photo') {
+        // Inline photo bubble. The bot already stripped the marker from
+        // the text-side assistant_message; this event carries the URL.
+        setTurns((prev) => [...prev, {
+          role: 'assistant',
+          content: '',
+          source: data.source,
+          photoUrl: data.url,
+          photoCaption: data.caption,
+        }]);
       } else if (eventName === 'processing') {
         if (data.processing !== undefined) setProcessing(!!data.processing);
         if (!data.processing) setProgressLabel(null);
@@ -257,21 +267,37 @@ function TabBtn({ label, active, onClick, live }: { label: string; active: boole
 
 function Bubble({ turn }: { turn: Turn }) {
   const isUser = turn.role === 'user';
-  const html = isUser ? null : renderMarkdown(turn.content);
+  const isPhoto = !!turn.photoUrl;
+  const html = (isUser || isPhoto) ? null : renderMarkdown(turn.content);
   return (
     <div class={'flex ' + (isUser ? 'justify-end' : 'justify-start')}>
       <div
         class={[
-          'max-w-[75%] rounded-lg px-3 py-2 text-[12.5px] leading-relaxed',
+          'max-w-[75%] rounded-lg text-[12.5px] leading-relaxed overflow-hidden',
+          isPhoto ? 'p-1' : 'px-3 py-2',
           isUser
             ? 'bg-[var(--color-accent)] text-white rounded-br-sm whitespace-pre-wrap'
             : 'bg-[var(--color-card)] border border-[var(--color-border)] text-[var(--color-text)] rounded-bl-sm chat-md',
         ].join(' ')}
       >
-        {isUser
-          ? turn.content
-          : <div dangerouslySetInnerHTML={{ __html: html || '' }} />}
-        {turn.source === 'dashboard' && (
+        {isPhoto ? (
+          <>
+            <img
+              src={turn.photoUrl}
+              alt={turn.photoCaption || 'attached image'}
+              class="block rounded max-h-[320px] w-auto object-contain"
+              loading="lazy"
+            />
+            {turn.photoCaption && (
+              <div class="px-2 py-1 text-[11px] text-[var(--color-text-muted)]">{turn.photoCaption}</div>
+            )}
+          </>
+        ) : isUser ? (
+          turn.content
+        ) : (
+          <div dangerouslySetInnerHTML={{ __html: html || '' }} />
+        )}
+        {turn.source === 'dashboard' && !isPhoto && (
           <div class="text-[9.5px] opacity-60 mt-1 uppercase tracking-wider">via dashboard</div>
         )}
       </div>

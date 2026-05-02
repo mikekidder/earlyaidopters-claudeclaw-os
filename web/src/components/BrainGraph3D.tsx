@@ -65,6 +65,12 @@ function lobeFor(agentId: string): string {
   return AGENT_LOBE[agentId] || 'frontal';
 }
 
+const SYNAPSE_LOBES = ['frontal', 'parietal', 'temporal', 'occipital'] as const;
+function pickRandomOtherLobe(exclude: string): string {
+  const pool = SYNAPSE_LOBES.filter((l) => l !== exclude);
+  return pool[Math.floor(Math.random() * pool.length)];
+}
+
 // ── Hash-based 3D noise ────────────────────────────────────────────
 // Cheap, deterministic value noise with smoothstep interpolation.
 // Good enough to give the brain mesh a lumpy organic surface.
@@ -463,14 +469,41 @@ function applyActivityGlow(
 // Pick a deterministic dot position for an entry inside its lobe's
 // surface points. Stable across renders so the visualization doesn't
 // shuffle on every poll.
-function pickSurface(surface: THREE.Vector3[], lobeId: string, slotIdx: number): THREE.Vector3 | null {
-  // Filter surface points to the lobe's region
-  const region = surface.filter((v) => {
+// Cache sorted lobe regions per (surfaceArrayRef, lobeId). The sort
+// is the thing that makes the layout *predictable* — slot 0 lands at
+// the top of the lobe and slots fill downward, so a chronological
+// entry list maps to a chronological top-to-bottom band on the brain.
+// WeakMap keys on the surface array reference so cache invalidates
+// naturally when the brain is rebuilt (procedural fallback, etc).
+const sortedRegionCache = new WeakMap<THREE.Vector3[], Map<string, THREE.Vector3[]>>();
+
+function getSortedRegion(surface: THREE.Vector3[], lobeId: string): THREE.Vector3[] {
+  let perLobe = sortedRegionCache.get(surface);
+  if (!perLobe) {
+    perLobe = new Map();
+    sortedRegionCache.set(surface, perLobe);
+  }
+  let region = perLobe.get(lobeId);
+  if (region) return region;
+
+  region = surface.filter((v) => {
     const len = Math.sqrt(v.x * v.x + v.y * v.y + v.z * v.z);
+    if (len < 1e-6) return false;
     const nx = v.x / len, ny = v.y / len, nz = v.z / len;
     const w = lobeWeights(nx, ny, nz);
     return isDominantLobe(lobeId, w);
   });
+  // Sort top-to-bottom (high Y first), tie-break front-to-back. This
+  // gives every lobe a stable column of slots: slot 0 at the top of
+  // the cortex, last slot at the bottom. Combined with a chronological
+  // entry sort, the user can read recency by scanning down a lobe.
+  region.sort((a, b) => (b.y - a.y) || (b.z - a.z) || (a.x - b.x));
+  perLobe.set(lobeId, region);
+  return region;
+}
+
+function pickSurface(surface: THREE.Vector3[], lobeId: string, slotIdx: number): THREE.Vector3 | null {
+  const region = getSortedRegion(surface, lobeId);
   if (region.length === 0) return null;
   return region[slotIdx % region.length];
 }
@@ -509,6 +542,28 @@ interface BrainGeoSnapshot {
   vertexLobeIds: string[];
 }
 
+// Approximate centroids of each lobe in the brain's local space, used
+// as endpoints when an agent activity event spawns a cross-lobe
+// synapse arc. Values picked to land just inside the cortex of the
+// 1.6-unit normalized brain. Two temporal centroids (left and right)
+// so arcs don't always emerge from the same point.
+const LOBE_CENTROIDS: Record<string, THREE.Vector3> = {
+  frontal: new THREE.Vector3(0, 0.20, 0.62),
+  parietal: new THREE.Vector3(0, 0.62, 0.05),
+  temporal: new THREE.Vector3(0.58, -0.30, 0.10),
+  temporal_l: new THREE.Vector3(-0.58, -0.30, 0.10),
+  occipital: new THREE.Vector3(0, 0.20, -0.62),
+};
+
+interface SynapseArc {
+  mesh: THREE.Mesh;
+  material: THREE.ShaderMaterial;
+  // Rendered to the synapsesGroup (parented to brainGroup so the arc
+  // rotates and breathes with the brain). createdAt drives uProgress.
+  createdAt: number;
+  lifeSec: number;
+}
+
 export function BrainGraph3D({ entries, agentFilter, agentColors, blurOn }: Props) {
   const wrapRef = useRef<HTMLDivElement>(null);
   const sceneStateRef = useRef<{
@@ -520,6 +575,10 @@ export function BrainGraph3D({ entries, agentFilter, agentColors, blurOn }: Prop
     rightSurface: THREE.Vector3[];
     brainGeos: BrainGeoSnapshot[];
     dotsGroup: THREE.Group;
+    synapsesGroup: THREE.Group;
+    synapses: SynapseArc[];
+    spawnSynapse: (fromLobe: string, toLobe: string, color: THREE.Color) => void;
+    bloom: UnrealBloomPass;
     raycaster: THREE.Raycaster;
     pointer: THREE.Vector2;
     dotMap: Map<THREE.Object3D, DotData>;
@@ -528,6 +587,15 @@ export function BrainGraph3D({ entries, agentFilter, agentColors, blurOn }: Prop
     brainGroup: THREE.Group;
     cleanup: () => void;
   } | null>(null);
+
+  // Track which entry ids we've already converted into synapse arcs,
+  // so a re-render of the same `entries` list doesn't spawn duplicate
+  // arcs. Keep a tail-cap to bound memory across long sessions.
+  const seenEntryIdsRef = useRef<Set<number>>(new Set());
+  // Track the previous lobe so each new entry traces FROM the lobe
+  // that just fired TO the lobe of the new entry — gives the arcs a
+  // narrative ("comms hands off to research").
+  const previousLobeRef = useRef<string | null>(null);
 
   const [hovered, setHovered] = useState<number | null>(null);
   const [mousePos, setMousePos] = useState<{ x: number; y: number } | null>(null);
@@ -592,16 +660,150 @@ export function BrainGraph3D({ entries, agentFilter, agentColors, blurOn }: Prop
     const brainGroup = new THREE.Group();
     scene.add(brainGroup);
 
-    // (The atmospheric glow comes from the page's CSS radial gradient
-    // and the bloom pass — no in-scene halo plane needed. The previous
-    // 5×5 plane became a visible blue cylinder when the camera tilted
-    // off-axis.)
+    // ── Backside fresnel rim halo ────────────────────────────────────
+    // A larger sphere rendered with BackSide + a fresnel falloff sits
+    // behind the brain mesh and pushes a soft glow OUT past the
+    // silhouette. Reads as if the cortex itself is emitting light.
+    // Cheap (one extra draw call), no shadows, additive blending so it
+    // never darkens anything underneath. The bloom pass picks up the
+    // bright rim and turns it into a real halo.
+    const haloGeometry = new THREE.SphereGeometry(0.96, 64, 48);
+    const haloMaterial = new THREE.ShaderMaterial({
+      transparent: true,
+      depthWrite: false,
+      blending: THREE.AdditiveBlending,
+      side: THREE.BackSide,
+      uniforms: {
+        uColor: { value: new THREE.Color(0xa074ff) },
+        uIntensity: { value: 0.9 },
+        uPower: { value: 3.2 },
+      },
+      vertexShader: /* glsl */ `
+        varying vec3 vNormalW;
+        varying vec3 vViewDir;
+        void main() {
+          vec4 worldPos = modelMatrix * vec4(position, 1.0);
+          vNormalW = normalize(mat3(modelMatrix) * normal);
+          vViewDir = normalize(cameraPosition - worldPos.xyz);
+          gl_Position = projectionMatrix * viewMatrix * worldPos;
+        }
+      `,
+      fragmentShader: /* glsl */ `
+        uniform vec3 uColor;
+        uniform float uIntensity;
+        uniform float uPower;
+        varying vec3 vNormalW;
+        varying vec3 vViewDir;
+        void main() {
+          // BackSide flips normals; negate so fresnel reads the front
+          // surface. Pow-falloff concentrates the glow at the
+          // silhouette and fades to zero toward the camera-facing
+          // poles, which keeps the brain's own detail visible through
+          // the shell.
+          float facing = clamp(dot(-vNormalW, vViewDir), 0.0, 1.0);
+          float fresnel = pow(1.0 - facing, uPower);
+          gl_FragColor = vec4(uColor * fresnel * uIntensity, fresnel);
+        }
+      `,
+    });
+    const haloMesh = new THREE.Mesh(haloGeometry, haloMaterial);
+    haloMesh.renderOrder = -1; // draw before brain so the brain's
+                               // depth-tested fragments paint on top
+    brainGroup.add(haloMesh);
 
     // Dots group — parented to the brain so the dots rotate, breathe,
     // and tilt with it. Previously they sat in scene root, which left
     // them floating in space while the brain spun around them.
     const dotsGroup = new THREE.Group();
     brainGroup.add(dotsGroup);
+
+    // Synapse arcs group — same parent so arcs follow the brain's
+    // rotation and breathing. Each arc is a TubeGeometry along a
+    // quadratic Bezier whose control point is pushed outward from
+    // origin to give the line a satisfying arc above the cortex.
+    const synapsesGroup = new THREE.Group();
+    synapsesGroup.renderOrder = 2; // drawn after the brain meshes
+    brainGroup.add(synapsesGroup);
+    const synapses: SynapseArc[] = [];
+
+    function spawnSynapse(fromLobe: string, toLobe: string, color: THREE.Color) {
+      // Resolve endpoints. Temporal lobe randomizes between left/right
+      // hemispheres so repeated arcs to/from temporal don't hammer the
+      // same spot.
+      const pickEndpoint = (id: string): THREE.Vector3 => {
+        if (id === 'temporal') {
+          return (Math.random() < 0.5 ? LOBE_CENTROIDS.temporal : LOBE_CENTROIDS.temporal_l).clone();
+        }
+        return (LOBE_CENTROIDS[id] || LOBE_CENTROIDS.frontal).clone();
+      };
+      const from = pickEndpoint(fromLobe);
+      const to = pickEndpoint(toLobe);
+      // Don't draw a same-point arc.
+      if (from.distanceTo(to) < 0.05) return;
+
+      // Control point pushed outward from origin along the midpoint
+      // direction so the arc bows over the cortex instead of cutting
+      // through it. 1.4× radius is enough lift to read clearly.
+      const mid = from.clone().add(to).multiplyScalar(0.5);
+      const lift = mid.clone().normalize().multiplyScalar(1.18);
+      mid.lerp(lift, 0.7);
+
+      const curve = new THREE.QuadraticBezierCurve3(from, mid, to);
+      const tubeGeo = new THREE.TubeGeometry(curve, 48, 0.008, 8, false);
+
+      const mat = new THREE.ShaderMaterial({
+        transparent: true,
+        depthWrite: false,
+        blending: THREE.AdditiveBlending,
+        uniforms: {
+          uColor: { value: color.clone() },
+          uProgress: { value: 0 },
+          uIntensity: { value: 1.4 },
+        },
+        vertexShader: /* glsl */ `
+          varying float vU;
+          void main() {
+            // TubeGeometry's UV.x runs 0..1 along the spine.
+            vU = uv.x;
+            gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+          }
+        `,
+        fragmentShader: /* glsl */ `
+          uniform vec3 uColor;
+          uniform float uProgress;
+          uniform float uIntensity;
+          varying float vU;
+          void main() {
+            // Moving Gaussian bullet riding the curve.
+            float head = exp(-pow((vU - uProgress) * 8.0, 2.0));
+            // Trailing tail behind the head fades smoothly.
+            float trail = clamp(1.0 - (uProgress - vU) * 2.5, 0.0, 1.0);
+            trail *= step(vU, uProgress);
+            float fade = smoothstep(0.0, 0.08, uProgress) * (1.0 - smoothstep(0.85, 1.0, uProgress));
+            float a = (head * 1.6 + trail * 0.45) * fade;
+            gl_FragColor = vec4(uColor * uIntensity, clamp(a, 0.0, 1.0));
+          }
+        `,
+      });
+      const tube = new THREE.Mesh(tubeGeo, mat);
+      tube.frustumCulled = false;
+      synapsesGroup.add(tube);
+
+      synapses.push({
+        mesh: tube,
+        material: mat,
+        createdAt: performance.now() / 1000,
+        lifeSec: 1.2,
+      });
+
+      // Hard cap — never let runaway entry feeds spawn unbounded arcs.
+      while (synapses.length > 24) {
+        const oldest = synapses.shift()!;
+        synapsesGroup.remove(oldest.mesh);
+        oldest.mesh.geometry.dispose();
+        oldest.material.dispose();
+      }
+    }
 
     const controls = new OrbitControls(camera, renderer.domElement);
     controls.enableDamping = true;
@@ -610,6 +812,12 @@ export function BrainGraph3D({ entries, agentFilter, agentColors, blurOn }: Prop
     controls.minDistance = 2.2;
     controls.maxDistance = 5.5;
     controls.enablePan = false;
+    // Shift the lookAt point slightly down so the brain renders in
+    // the upper half of the canvas. With target at origin (the default)
+    // the brain landed visually low and users had to scroll the page
+    // to see the bottom of the cortex.
+    controls.target.set(0, -0.18, 0);
+    controls.update();
 
     const raycaster = new THREE.Raycaster();
     const pointer = new THREE.Vector2();
@@ -626,11 +834,12 @@ export function BrainGraph3D({ entries, agentFilter, agentColors, blurOn }: Prop
     composer.addPass(new RenderPass(scene, camera));
     const bloom = new UnrealBloomPass(
       new THREE.Vector2(w, h),
-      0.22, // strength — conservative; the brain itself is bright
-            // enough now that minimal bloom keeps the lobe colors
-            // crisp without bleeding red/orange into empty space
-      0.30, // radius — tight halo
-      0.85, // threshold — only the brightest peak lobes bloom
+      0.42, // strength — pushed up for demo wow. The cortex now reads
+            // as luminous instead of merely lit; active lobes blow out
+            // into a real HDR-feeling halo. Tier-2 slider can drive
+            // this dynamically; baseline lives here.
+      0.34, // radius — slightly wider so the halo wraps the silhouette
+      0.78, // threshold — lower so quieter lobes still contribute
     );
     composer.addPass(bloom);
     composer.addPass(new OutputPass());
@@ -638,39 +847,88 @@ export function BrainGraph3D({ entries, agentFilter, agentColors, blurOn }: Prop
     let disposed = false;
     let rafId = 0;
     const start = performance.now();
+    // Idle blend tracks a smooth 0..1 weight so the cinematic drift
+    // fades in/out instead of cutting on/off when the user grabs the
+    // brain or lets it go.
+    let idleWeight = 0;
     function animate() {
       rafId = requestAnimationFrame(animate);
       const t = (performance.now() - start) / 1000;
 
-      // Idle drift.
-      const idle = Date.now() - lastInteract > 1500;
-      if (idle) brainGroup.rotation.y += 0.0035;
+      // Cinematic idle drift. Two non-resonant rotation rates give the
+      // brain a Lissajous-style path that never quite repeats. Subtle
+      // X tilt + Y spin reads as if the camera is gently orbiting.
+      // Fades in over ~1s of inactivity, fades out the moment the user
+      // touches the OrbitControls. Replaces the previous straight
+      // rotation.y += 0.0035 which felt mechanical for a hero shot.
+      const idleTarget = (Date.now() - lastInteract > 1200) ? 1 : 0;
+      idleWeight += (idleTarget - idleWeight) * 0.05;
+      const driftY = Math.cos(t * 0.18) * 0.0042;
+      const driftX = Math.sin(t * 0.11) * 0.0009;
+      brainGroup.rotation.y += driftY * idleWeight;
+      brainGroup.rotation.x += driftX * idleWeight;
 
-      // Breathing pulse.
-      const breathe = 1 + Math.sin(t * 0.7) * 0.012;
+      // Breathing pulse — bumped from 2.4% to 5% amplitude. At the old
+      // setting the pulse was so subtle most viewers missed it. 5%
+      // reads as alive without becoming distracting.
+      const breathe = 1 + Math.sin(t * 0.7) * 0.025;
       brainGroup.scale.setScalar(breathe);
 
       // Neural firing — every dot has its own deterministic pulse
       // schedule based on its entry id so a few flash brightly at any
       // given time, like neurons firing across the cortex.
+      // Synapse arcs — advance each pulse, dispose expired. The
+      // animation reads as if information is flowing between lobes
+      // when an agent kicks off work.
+      const nowSec = performance.now() / 1000;
+      for (let i = synapses.length - 1; i >= 0; i--) {
+        const s = synapses[i];
+        const age = nowSec - s.createdAt;
+        const progress = Math.min(1, age / s.lifeSec);
+        s.material.uniforms.uProgress.value = progress;
+        if (progress >= 1) {
+          synapsesGroup.remove(s.mesh);
+          s.mesh.geometry.dispose();
+          s.material.dispose();
+          synapses.splice(i, 1);
+        }
+      }
+
+      const hoveredDimming = hoveredEntryRef.current !== null || selectedEntryRef.current !== null;
       dotMap.forEach((d) => {
-        if (d.entry.id === hoveredEntryRef.current) return;
-        if (selectedEntryRef.current === d.entry.id) return;
+        const isFocused = d.entry.id === hoveredEntryRef.current
+                       || selectedEntryRef.current === d.entry.id;
+        const dotMat = d.mesh.material as THREE.MeshBasicMaterial;
+        const haloMat = d.halo.material as THREE.MeshBasicMaterial;
+
+        if (isFocused) {
+          // Hovered/selected dot pops: full opacity, big halo, scale up.
+          d.mesh.scale.setScalar(1.7);
+          d.halo.scale.setScalar(2.0);
+          dotMat.opacity = 1.0;
+          haloMat.opacity = 0.85;
+          return;
+        }
+
+        // Slow per-dot pulse keeps the layout feeling alive without
+        // making any one dot scream for attention. When the user is
+        // hovering something, dim the others so the focused one stands
+        // out clearly.
         const seed = (d.entry.id % 100) / 100;
         const phase = (t * 0.45 + seed * 8) % 5;
         let scale = 1;
-        let intensity = 0.20;
+        let opacityBoost = 0;
         if (phase < 0.55) {
           const pulse = Math.sin((phase / 0.55) * Math.PI);
-          scale = 1 + pulse * 0.4;
-          intensity = 0.20 + pulse * 0.55;
+          scale = 1 + pulse * 0.25;
+          opacityBoost = pulse * 0.18;
         }
         d.mesh.scale.setScalar(scale);
         d.halo.scale.setScalar(scale);
-        const mat = d.mesh.material as THREE.MeshStandardMaterial;
-        if (mat.emissiveIntensity !== undefined) {
-          mat.emissiveIntensity = intensity;
-        }
+        const baseOpacity = hoveredDimming ? 0.22 : 0.82;
+        const baseHalo = hoveredDimming ? 0.05 : 0.22;
+        dotMat.opacity = Math.min(1, baseOpacity + opacityBoost);
+        haloMat.opacity = Math.min(1, baseHalo + opacityBoost * 0.4);
       });
 
       controls.update();
@@ -695,7 +953,8 @@ export function BrainGraph3D({ entries, agentFilter, agentColors, blurOn }: Prop
     sceneStateRef.current = {
       scene, camera, renderer, controls,
       leftSurface: [], rightSurface: [], brainGeos: [],
-      dotsGroup, raycaster, pointer, dotMap,
+      dotsGroup, synapsesGroup, synapses, spawnSynapse, bloom,
+      raycaster, pointer, dotMap,
       rafId, lastInteract, brainGroup,
       cleanup: () => {
         disposed = true;
@@ -727,11 +986,16 @@ export function BrainGraph3D({ entries, agentFilter, agentColors, blurOn }: Prop
     const fallbackToProcedural = (err: unknown) => {
       if (import.meta.env.DEV) console.warn('Falling back to procedural brain mesh; /brain.glb failed to load.', err);
       if (disposed) return;
-      // Remove only the loaded GLB (if any) — keep dotsGroup parented.
-      // Walk children and remove any THREE.Group that came from the
-      // gltf scene, but keep dotsGroup which we added at init.
+      // Remove only the loaded GLB (if any) — keep dotsGroup, the
+      // backside halo, and synapsesGroup parented. Earlier code naively
+      // removed every child except dotsGroup, which silently detached
+      // the halo shell and synapse arcs whenever brain.glb failed.
+      // Codex T3-1 finding: the new visual effects vanished on the
+      // procedural fallback path. Whitelist the things we built at init
+      // and drop the rest (the loaded gltf scene).
+      const keep = new Set<THREE.Object3D>([dotsGroup, synapsesGroup, haloMesh]);
       const toRemove: THREE.Object3D[] = [];
-      brainGroup.children.forEach((c) => { if (c !== dotsGroup) toRemove.push(c); });
+      brainGroup.children.forEach((c) => { if (!keep.has(c)) toRemove.push(c); });
       toRemove.forEach((c) => brainGroup.remove(c));
       activateBrain(buildProceduralBrain(brainGroup));
     };
@@ -769,6 +1033,48 @@ export function BrainGraph3D({ entries, agentFilter, agentColors, blurOn }: Prop
     const state = sceneStateRef.current;
     if (!state || !ready) return;
 
+    // Detect newly arrived entries since last sync. Each one fires a
+    // synapse arc from the previously-active lobe to the new entry's
+    // lobe — visually narrating "this agent just handed off to that
+    // one". Skips the very first sync (initial bulk load) so a fresh
+    // page open doesn't fire 100 arcs simultaneously.
+    const seen = seenEntryIdsRef.current;
+    const isInitialLoad = seen.size === 0;
+    const newEntries: typeof entries = [];
+    for (const e of entries) {
+      if (!seen.has(e.id)) {
+        seen.add(e.id);
+        if (!isInitialLoad) newEntries.push(e);
+      }
+    }
+    if (!isInitialLoad && newEntries.length > 0) {
+      // Fire arcs for up to a small batch — bursts shouldn't drown
+      // the visualization with overlapping pulses.
+      for (const e of newEntries.slice(0, 6)) {
+        const toLobe = lobeFor(e.agent_id);
+        const fromLobe = previousLobeRef.current && previousLobeRef.current !== toLobe
+          ? previousLobeRef.current
+          : pickRandomOtherLobe(toLobe);
+        let colorHex = agentColors[e.agent_id] || '#a074ff';
+        if (typeof colorHex === 'string' && colorHex.startsWith('var(')) {
+          const m = colorHex.match(/var\((--[^)]+)\)/);
+          if (m) {
+            const resolved = getComputedStyle(document.documentElement)
+              .getPropertyValue(m[1]).trim();
+            if (resolved) colorHex = resolved;
+          }
+        }
+        state.spawnSynapse(fromLobe, toLobe, new THREE.Color(colorHex));
+        previousLobeRef.current = toLobe;
+      }
+    }
+    // Memory cap: keep the seen set bounded so a long session doesn't
+    // grow it unbounded. We re-add every render, so trimming is safe.
+    if (seen.size > 4000) {
+      const arr = Array.from(seen);
+      seenEntryIdsRef.current = new Set(arr.slice(arr.length - 2000));
+    }
+
     // Clear old dots
     while (state.dotsGroup.children.length > 0) {
       const child = state.dotsGroup.children[0];
@@ -782,14 +1088,28 @@ export function BrainGraph3D({ entries, agentFilter, agentColors, blurOn }: Prop
     const slotIdx: Record<string, number> = {};
     let placed = 0;
 
-    for (const e of entries) {
+    // Place entries in chronological order so the layout is *meaningful*
+    // instead of feeling random. Newest entries get slot 0 (top of the
+    // lobe column from getSortedRegion), older ones fill downward.
+    // Tie-break by entry id desc when timestamps collide (the API
+    // returns entries with whole-second precision, so same-second
+    // entries are common). Without the tiebreak the layout shuffles
+    // on each render whenever Array#sort isn't stable for ties.
+    const placementOrder = [...entries].sort((a, b) => (b.created_at - a.created_at) || (b.id - a.id));
+
+    for (const e of placementOrder) {
       const lobe = lobeFor(e.agent_id);
-      // Alternate sides per entry index to fill both hemispheres.
-      const side = (e.id % 2 === 0) ? 'left' : 'right';
+      // Alternate sides deterministically per slot — within a lobe the
+      // first slot of newest entries goes left, second right, third
+      // left, etc. Stable across renders because slotIdx is keyed.
+      const lobeSlot = (slotIdx[lobe] ?? -1) + 1;
+      slotIdx[lobe] = lobeSlot;
+      const side = (lobeSlot % 2 === 0) ? 'left' : 'right';
       const surface = side === 'left' ? state.leftSurface : state.rightSurface;
-      const key = `${lobe}-${side}`;
-      const idx = slotIdx[key] = (slotIdx[key] ?? -1) + 1;
-      const pos = pickSurface(surface, lobe, idx);
+      // Half the slot index per side, so each side fills its own
+      // top-to-bottom column without doubling up positions.
+      const sideSlot = Math.floor(lobeSlot / 2);
+      const pos = pickSurface(surface, lobe, sideSlot);
       if (!pos) continue;
       placed++;
 
@@ -822,22 +1142,27 @@ export function BrainGraph3D({ entries, agentFilter, agentColors, blurOn }: Prop
       }
       const color = new THREE.Color(colorHex);
 
-      // Dot meshes are kept around for raycasting (hover/click) but
-      // rendered invisibly. Fixed radius — they're not visible, so
-      // the user-facing slider is now Glow intensity instead.
-      const r = 0.04;
-      const dotGeo = new THREE.SphereGeometry(r, 8, 8);
+      // Visible dots, agent-colored. Earlier iterations hid them and
+      // relied on cortex glow alone, but users couldn't tell which spot
+      // on the brain mapped to which entry. With visible dots + the
+      // chronological layout above (newest at top of lobe, oldest at
+      // bottom), every dot is a deterministic mark you can scan and
+      // hover.
+      const r = 0.022;
+      const dotGeo = new THREE.SphereGeometry(r, 12, 12);
       const dotMat = new THREE.MeshBasicMaterial({
-        color, transparent: true, opacity: 0, depthWrite: false,
+        color, transparent: true, opacity: 0.82, depthWrite: false,
       });
       const dot = new THREE.Mesh(dotGeo, dotMat);
       dot.position.copy(outward);
-      dot.visible = true; // kept "visible" so raycasting works; opacity 0 makes it invisible
       state.dotsGroup.add(dot);
 
-      const haloGeo = new THREE.SphereGeometry(r * 2.6, 6, 6);
+      // Soft halo behind each dot — additive blend so it reads as
+      // glow, not as a sphere. The bloom pass picks it up.
+      const haloGeo = new THREE.SphereGeometry(r * 2.6, 10, 10);
       const haloMat = new THREE.MeshBasicMaterial({
-        color, transparent: true, opacity: 0, depthWrite: false,
+        color, transparent: true, opacity: 0.22, depthWrite: false,
+        blending: THREE.AdditiveBlending,
       });
       const halo = new THREE.Mesh(haloGeo, haloMat);
       halo.position.copy(outward);
@@ -878,6 +1203,18 @@ export function BrainGraph3D({ entries, agentFilter, agentColors, blurOn }: Prop
     applyActivityGlow(state.brainGeos, activity, hoveredLobe, filters.nodeSize);
   }, [entries, ready, filters.hiddenAgents, filters.hiddenLobes, filters.query, agentFilter, hoveredLobe, filters.nodeSize]);
 
+  // The "Glow intensity" slider also drives the bloom pass strength so
+  // moving it has a visible HDR effect on the silhouette, not only the
+  // per-vertex brightness boost. Range tuned so the default (slider=1)
+  // matches the new baseline of 0.42, slider=0 dampens to 0.30, and
+  // slider=2 pushes to 0.60 for that demo-wow saturated look.
+  useEffect(() => {
+    const state = sceneStateRef.current;
+    if (!state || !ready) return;
+    const slider = filters.nodeSize;
+    state.bloom.strength = 0.30 + (slider / 2) * 0.30;
+  }, [filters.nodeSize, ready]);
+
   // Apply visibility (agent / lobe / search filter) without rebuilding meshes.
   useEffect(() => {
     const state = sceneStateRef.current;
@@ -892,16 +1229,10 @@ export function BrainGraph3D({ entries, agentFilter, agentColors, blurOn }: Prop
         const q = filters.query.toLowerCase();
         if (!e.summary.toLowerCase().includes(q) && !e.action.toLowerCase().includes(q)) visible = false;
       }
-      // Dots are visualized via vertex-color glow now, not as actual
-      // sphere meshes. Keep their opacity at 0 always; they stay alive
-      // only as raycast targets for hover/click.
-      const dotMat = d.mesh.material as THREE.MeshBasicMaterial;
-      const haloMat = d.halo.material as THREE.MeshBasicMaterial;
-      dotMat.opacity = 0;
-      haloMat.opacity = 0;
-      // Mark whether the entry is visually active so the activity
-      // glow effect (which reads filters separately) can react.
-      void visible;
+      // Hidden dots stop participating in raycasting too — Three.js
+      // skips invisible objects in intersectObjects by default.
+      d.mesh.visible = visible;
+      d.halo.visible = visible;
     });
   }, [filters.hiddenAgents, filters.hiddenLobes, filters.query, agentFilter]);
 
@@ -1339,7 +1670,7 @@ function LobeStatsTooltip({
 
   return (
     <div
-      class="absolute pointer-events-none bg-[var(--color-card)]/95 border border-[var(--color-border)] rounded-lg shadow-xl p-3 text-[12px] text-[var(--color-text)] z-10"
+      class="absolute pointer-events-none bg-[var(--color-card)]/95 border border-[var(--color-border)] rounded-lg shadow-xl p-3 text-[12px] text-[var(--color-text)] z-10 brain-tooltip-enter"
       style={{
         left: Math.min(mousePos.x + 14, wrapWidth - 230),
         top: Math.min(mousePos.y + 14, wrapHeight - 200),

@@ -57,6 +57,7 @@ export function startChatStream() {
 
     es.addEventListener('user_message', dispatch('user_message'));
     es.addEventListener('assistant_message', dispatch('assistant_message'));
+    es.addEventListener('assistant_photo', dispatch('assistant_photo'));
     es.addEventListener('processing', dispatch('processing'));
     es.addEventListener('progress', dispatch('progress'));
     es.addEventListener('error', dispatch('error') as any);

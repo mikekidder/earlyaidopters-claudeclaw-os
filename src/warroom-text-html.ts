@@ -259,7 +259,15 @@ export function getWarRoomTextHtml(token: string, chatId: string, meetingId: str
     font-style: italic;
   }
   .agent-status-line.fade-out { opacity: 0; transform: translateY(-4px); }
-  .agent-status-line.empty { font-style: italic; opacity: 0.55; }
+  .agent-status-line.empty {
+    font-style: italic;
+    opacity: 0.45;
+    /* Hairline left accent so the empty state reads as "placeholder"
+       rather than "real summary that just happens to be short". */
+    border-left: 2px solid rgba(255,255,255,0.07);
+    padding-left: 6px;
+  }
+  .agent-status-line.empty .agent-ticker-text { color: var(--text-faint, #6b7280); }
   .agent-status-time {
     font-size: 10px; color: var(--text-mute); opacity: 0.7;
     margin-top: 2px;
@@ -1076,6 +1084,17 @@ const API = window.location.origin;
 const Q = '?token=' + encodeURIComponent(TOKEN) + (CHAT_ID ? '&chatId=' + encodeURIComponent(CHAT_ID) : '');
 const MEETING_Q = Q + '&meetingId=' + encodeURIComponent(MEETING_ID);
 
+// Single avatar URL builder. Hits the same tokenized /api endpoint
+// Mission Control uses, so the user's uploaded or Telegram-cached
+// photo propagates everywhere instead of dropping back to repo art.
+// avatarEtag (mtime+size) is appended for cache busting; the server
+// also serves no-cache + ETag so 304 revalidation handles steady state.
+function avatarUrl(agentId, avatarEtag) {
+  let url = '/api/agents/' + encodeURIComponent(agentId) + '/avatar' + Q;
+  if (avatarEtag) url += '&v=' + encodeURIComponent(avatarEtag);
+  return url;
+}
+
 // Client-side XSS defense. We only ever inject user-controlled text via
 // .textContent, but a few spots set innerHTML with static templates that
 // include escaped values.
@@ -1150,7 +1169,7 @@ function renderRoster() {
     const av = document.createElement('div');
     av.className = 'agent-avatar';
     const img = document.createElement('img');
-    img.src = '/warroom-avatar/' + encodeURIComponent(a.id) + Q;
+    img.src = avatarUrl(a.id, a.avatar_etag);
     img.alt = '';
     img.onerror = () => { img.remove(); av.textContent = agentInitials(a.name).toUpperCase(); };
     av.appendChild(img);
@@ -1180,7 +1199,14 @@ function renderRoster() {
     ticker.className = 'agent-ticker';
     const tickerText = document.createElement('span');
     tickerText.className = 'agent-ticker-text';
-    tickerText.textContent = a.description || 'Quiet today.';
+    // Empty placeholder copy: actionable + agent-aware. The previous
+    // fallback was the agent.yaml description, which made a zero-hive
+    // agent look like a real (but oddly-formatted) entry — spotted in
+    // the demo because Content had no hive_mind rows but its row read
+    // "YouTube scripts, LinkedIn posts" same as a real summary. Now
+    // it reads as a clear placeholder until the first hive entry
+    // lands. setAgentStatus flips this to the real entry on update.
+    tickerText.textContent = 'No activity yet — @' + a.id + ' to start.';
     ticker.appendChild(tickerText);
     statusLine.appendChild(ticker);
 
@@ -1554,6 +1580,7 @@ function startThinkingRotation(content) {
   const cap = content.querySelector('.thinking-caption');
   if (!cap) return;
   let last = cap.textContent || '';
+  const startedAt = Date.now();
   const tick = () => {
     // Bail if streaming has started or the bubble was removed.
     if (!cap.isConnected || content.dataset.phase !== 'waiting') return;
@@ -1561,7 +1588,13 @@ function startThinkingRotation(content) {
     setTimeout(() => {
       if (!cap.isConnected || content.dataset.phase !== 'waiting') return;
       last = pickThinkingCaption(last);
-      cap.textContent = last;
+      const elapsedSec = Math.floor((Date.now() - startedAt) / 1000);
+      // Past 8s, append an elapsed-time hint so the user knows the
+      // agent is still alive even when the model is cold-starting.
+      // This addresses the demo failure mode where Meta took >10s
+      // and the user worried the bot was hung.
+      const suffix = elapsedSec >= 8 ? ' · still on it (' + elapsedSec + 's)' : '';
+      cap.textContent = last + suffix;
       cap.classList.remove('fade');
     }, 220);
   };
@@ -1587,7 +1620,7 @@ function appendAgentBubble(turnId, agentId, role, createdAt) {
   const av = document.createElement('div');
   av.className = 'avatar';
   const img = document.createElement('img');
-  img.src = '/warroom-avatar/' + encodeURIComponent(agentId) + Q;
+  img.src = avatarUrl(agentId, rosterById.get(agentId)?.avatar_etag);
   img.alt = '';
   img.onerror = () => { img.remove(); av.textContent = agentInitials(rosterById.get(agentId)?.name || agentId).toUpperCase(); };
   av.appendChild(img);
@@ -2469,8 +2502,8 @@ let mentionToken = '';  // the @query text we're matching against
 // discuss) round-trip to the orchestrator. Local commands (pin, unpin,
 // clear, end) are intercepted client-side in handleSlashCommand().
 const SLASH_COMMANDS = [
-  { name: 'standup', arg: false, label: 'Each agent reports what they\\'re working on' },
-  { name: 'discuss', arg: true,  placeholder: '<topic>', label: 'Open discussion on a topic — every agent weighs in' },
+  { name: 'standup', arg: true,  placeholder: '[@agent ...]', label: 'Each agent reports — add @-mentions to pick who runs' },
+  { name: 'discuss', arg: true,  placeholder: '[@agent ...] <topic>', label: 'Open discussion — add @-mentions to pick who weighs in' },
   { name: 'pin',     arg: true,  placeholder: '<agent>', label: 'Pin one agent so they lead every reply', local: true },
   { name: 'unpin',   arg: false, label: 'Release the pinned agent', local: true },
   { name: 'clear',   arg: false, label: 'Reset agents\\' sessions for this meeting', local: true },
@@ -2628,7 +2661,7 @@ function renderMentionPopup() {
     const av = document.createElement('div');
     av.className = 'm-avatar';
     const img = document.createElement('img');
-    img.src = '/warroom-avatar/' + encodeURIComponent(a.id) + Q;
+    img.src = avatarUrl(a.id, a.avatar_etag);
     img.alt = '';
     img.onerror = () => { img.remove(); av.textContent = (a.name || a.id).slice(0, 2).toUpperCase(); };
     av.appendChild(img);
@@ -3031,7 +3064,7 @@ async function runWarmupIntro(rosterForIntro) {
     const av = document.createElement('div');
     av.className = 'warmup-avatar';
     const img = document.createElement('img');
-    img.src = '/warroom-avatar/' + encodeURIComponent(a.id) + Q;
+    img.src = avatarUrl(a.id, a.avatar_etag);
     img.alt = '';
     img.onerror = () => { img.remove(); av.textContent = (a.name || a.id).slice(0, 2).toUpperCase(); };
     av.appendChild(img);

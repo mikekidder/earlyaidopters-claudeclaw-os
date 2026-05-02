@@ -1505,10 +1505,12 @@ async function loadAgents() {
           modelOpts.map(m => '<div class="model-opt' + (currentModel === m ? ' model-active' : '') + '" data-model="' + m + '" onclick="pickModel(this)">' + modelShort(m) + '</div>').join('') +
         '</div>' +
       '</div>';
-      // Avatar served from /warroom-avatar/:id (same PNGs War Room uses).
-      // The onerror fallback removes the <img> if no avatar file exists so
-      // newly-created agents don't show a broken image icon.
-      const avatarUrl = '/warroom-avatar/' + encodeURIComponent(a.id) + '?token=' + encodeURIComponent(TOKEN);
+      // Unified avatar endpoint: serves user uploads, Telegram-cached
+      // photos, or bundled fallback art from a single resolver. The
+      // onerror fallback removes the <img> if even the resolver 204s
+      // (no bundled art either) so we don't show a broken image icon.
+      const avatarV = a.avatar_etag ? ('&v=' + encodeURIComponent(a.avatar_etag)) : '';
+      const avatarUrl = '/api/agents/' + encodeURIComponent(a.id) + '/avatar?token=' + encodeURIComponent(TOKEN) + avatarV;
       const avatarImg = '<img src="' + avatarUrl + '" alt="" ' +
         'style="width:44px;height:44px;border-radius:50%;object-fit:cover;border:2px solid ' + color + ';flex-shrink:0;background:#0a0a0a" ' +
         'onerror="this.remove()">';

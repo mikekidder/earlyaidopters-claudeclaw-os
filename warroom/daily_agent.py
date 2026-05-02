@@ -79,25 +79,43 @@ AVATARS_DIR = Path(__file__).resolve().parent / "avatars"
 PROFILE_PIC_SIZE = 720  # square, matches DailyParams below
 
 
-def load_avatar_frame(agent_id: str, size: int = PROFILE_PIC_SIZE) -> OutputImageRawFrame | None:
+def load_avatar_frame(
+    agent_id: str,
+    size: int = PROFILE_PIC_SIZE,
+    explicit_path: str | None = None,
+) -> OutputImageRawFrame | None:
     """Load the agent's meet avatar and convert it to an OutputImageRawFrame
     so Daily's camera-out track displays it as a static profile picture.
 
-    Avatar preference order (same as meet-cli for Pika):
-      1. <agent>-meet.png (the anime/Shiro variant we generated)
-      2. <agent>.png (the warroom sidebar cartoon)
+    Source priority:
+      1. --avatar-path supplied by meet-cli (Node-side resolver picked it,
+         which means user uploads + Telegram-cached photos win)
+      2. <agent>-meet.png  (bundled meet-optimized art)
+      3. <agent>.png       (bundled default art)
     """
     if Image is None:
         logger.warning("PIL not available, skipping profile picture")
         return None
 
-    candidates = [
-        AVATARS_DIR / f"{agent_id}-meet.png",
-        AVATARS_DIR / f"{agent_id}-meet.jpg",
-        AVATARS_DIR / f"{agent_id}.png",
-        AVATARS_DIR / f"{agent_id}.jpg",
-    ]
-    path = next((p for p in candidates if p.exists() and p.stat().st_size > 1024), None)
+    path = None
+    if explicit_path:
+        candidate = Path(explicit_path)
+        if candidate.exists() and candidate.stat().st_size > 1024:
+            path = candidate
+        else:
+            logger.warning(
+                "explicit --avatar-path %s missing or too small; falling back",
+                explicit_path,
+            )
+
+    if path is None:
+        candidates = [
+            AVATARS_DIR / f"{agent_id}-meet.png",
+            AVATARS_DIR / f"{agent_id}-meet.jpg",
+            AVATARS_DIR / f"{agent_id}.png",
+            AVATARS_DIR / f"{agent_id}.jpg",
+        ]
+        path = next((p for p in candidates if p.exists() and p.stat().st_size > 1024), None)
     if path is None:
         logger.warning("No avatar found for agent=%s, camera-out will be blank", agent_id)
         return None
@@ -298,7 +316,11 @@ async def run_agent(args: argparse.Namespace) -> None:
     # Pre-load the profile picture frame so we can push it the moment
     # we join (and again when any new human arrives, so late joiners
     # also see the static image).
-    avatar_frame = load_avatar_frame(agent, size=PROFILE_PIC_SIZE)
+    avatar_frame = load_avatar_frame(
+        agent,
+        size=PROFILE_PIC_SIZE,
+        explicit_path=getattr(args, "avatar_path", None),
+    )
 
     @transport.event_handler("on_joined")
     async def on_joined(transport, data):
@@ -418,6 +440,13 @@ def main():
     parser.add_argument("--token", default=None, help="Optional Daily meeting token")
     parser.add_argument("--bot-name", default=None, help="Display name in the Daily UI")
     parser.add_argument("--brief", default=None, help="Path to a pre-flight briefing file")
+    parser.add_argument(
+        "--avatar-path",
+        default=None,
+        help="Absolute path to the avatar PNG/JPG to render on the camera-out "
+             "tile. Resolved Node-side via avatars.ts so user uploads and "
+             "Telegram-cached photos take priority over bundled meet art.",
+    )
     parser.add_argument(
         "--session-id",
         default=None,

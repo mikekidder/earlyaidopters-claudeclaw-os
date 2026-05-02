@@ -277,21 +277,38 @@ export interface ExtractResult {
  * Extract [SEND_FILE:path] and [SEND_PHOTO:path] markers from Claude's response.
  * Supports optional captions via pipe: [SEND_FILE:/path/to/file.pdf|Here's your report]
  *
+ * Tolerant of common malformed variants observed in the wild:
+ *   - Pipe used as the primary separator instead of colon
+ *     ([SEND_PHOTO|https://...] or SEND_PHOTO|https://...)
+ *   - Missing surrounding brackets entirely
+ *   - http(s) URLs in addition to filesystem paths
+ *
  * Returns the cleaned text (markers stripped) and an array of file descriptors.
  */
 export function extractFileMarkers(text: string): ExtractResult {
   const files: FileMarker[] = [];
 
-  const pattern = /\[SEND_(FILE|PHOTO):([^\]\|]+)(?:\|([^\]]*))?\]/g;
+  // Canonical bracketed form: [SEND_FILE:/abs/path|caption]
+  // Tolerant variants: pipe instead of colon, optional brackets, URL paths.
+  // The bracketed form is preferred (it's documented in CLAUDE.md), but the
+  // bare/pipe forms are recognized so a malformed agent reply still gets
+  // its image rendered instead of leaking the raw command string into chat.
+  const patterns: RegExp[] = [
+    /\[SEND_(FILE|PHOTO)[:|]\s*([^\]|]+?)(?:\s*\|\s*([^\]]*))?\]/g,
+    /(?:^|\s)SEND_(FILE|PHOTO)\s*[:|]\s*((?:https?:\/\/|\/)[^\s|\]]+)(?:\s*\|\s*([^\n]+))?/g,
+  ];
 
-  const cleaned = text.replace(pattern, (_, kind: string, filePath: string, caption?: string) => {
-    files.push({
-      type: kind === 'PHOTO' ? 'photo' : 'document',
-      filePath: filePath.trim(),
-      caption: caption?.trim() || undefined,
+  let cleaned = text;
+  for (const pattern of patterns) {
+    cleaned = cleaned.replace(pattern, (_match: string, kind: string, filePath: string, caption?: string) => {
+      files.push({
+        type: kind === 'PHOTO' ? 'photo' : 'document',
+        filePath: filePath.trim(),
+        caption: caption?.trim() || undefined,
+      });
+      return '';
     });
-    return '';
-  });
+  }
 
   // Collapse extra blank lines left by stripped markers
   const trimmed = cleaned.replace(/\n{3,}/g, '\n\n').trim();
@@ -1662,14 +1679,61 @@ async function processDashboardMessage(
       void evaluateMemoryRelevance(dashSurfacedIds, dashSummaries, text, rawResponse).catch(() => {});
     }
 
-    // Emit assistant response to SSE clients
-    emitChatEvent({ type: 'assistant_message', chatId: chatIdStr, content: rawResponse, source: 'dashboard' });
+    // Strip SEND_FILE / SEND_PHOTO markers BEFORE emitting to the chat
+    // SSE so the dashboard bubble doesn't show raw "[SEND_PHOTO|url]"
+    // text. Any photo URLs end up as separate assistant_photo events
+    // (handled below) so the SPA can inline-render them.
+    const { text: responseText, files: dashFileMarkers } = extractFileMarkers(rawResponse);
+    const cleanedForChat = responseText || (dashFileMarkers.length > 0 ? '' : 'Done.');
 
-    // Relay to Telegram so the user sees it there too
-    const { text: responseText } = extractFileMarkers(rawResponse);
+    // Emit assistant response to SSE clients
+    if (cleanedForChat) {
+      emitChatEvent({ type: 'assistant_message', chatId: chatIdStr, content: cleanedForChat, source: 'dashboard' });
+    }
+    // Emit one assistant_photo per http(s) photo URL the agent referenced.
+    // Filesystem paths (the standard for Telegram-bound files) are skipped
+    // here; they get handled by the Telegram leg below.
+    for (const f of dashFileMarkers) {
+      if (f.type !== 'photo') continue;
+      if (!/^https?:\/\//i.test(f.filePath)) continue;
+      emitChatEvent({
+        type: 'assistant_photo',
+        chatId: chatIdStr,
+        url: f.filePath,
+        caption: f.caption,
+        source: 'dashboard',
+      });
+    }
+
+    // Relay to Telegram so the user sees it there too. Wrap the relay
+    // in its own try/catch so a bad bot token (401 Unauthorized) does
+    // NOT bubble Telegram's raw error description into the chat feed.
+    // The dashboard already received the assistant message via SSE
+    // above; the Telegram leg is best-effort.
     if (responseText) {
-      for (const part of splitMessage(formatForTelegram(responseText))) {
-        await botApi.sendMessage(parseInt(chatIdStr), part, { parse_mode: 'HTML' });
+      try {
+        for (const part of splitMessage(formatForTelegram(responseText))) {
+          await botApi.sendMessage(parseInt(chatIdStr), part, { parse_mode: 'HTML' });
+        }
+      } catch (relayErr: any) {
+        const code = relayErr?.error_code ?? relayErr?.status ?? null;
+        const desc = String(relayErr?.description ?? relayErr?.message ?? '').toLowerCase();
+        const looksAuth = code === 401 || desc.includes('unauthorized') || desc.includes('not authenticated');
+        if (looksAuth) {
+          logger.warn({ err: relayErr }, 'Telegram relay failed: bot token not authorized');
+          emitChatEvent({
+            type: 'error',
+            chatId: chatIdStr,
+            content: 'Telegram relay skipped: this bot token is not authorized. Update TELEGRAM_BOT_TOKEN in Settings or re-issue with @BotFather.',
+          });
+        } else {
+          logger.warn({ err: relayErr }, 'Telegram relay failed (non-auth)');
+          emitChatEvent({
+            type: 'error',
+            chatId: chatIdStr,
+            content: 'Could not relay reply to Telegram. The dashboard reply above is current.',
+          });
+        }
       }
     }
 

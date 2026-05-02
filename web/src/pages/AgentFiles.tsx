@@ -216,18 +216,25 @@ export function AgentFiles() {
               </>
             ) : (
               <>
-                <strong class="text-[var(--color-text)]">agent.yaml</strong> defines model, description, and bot token. The agent process loads it once at startup, so changes require a restart. The bot token is redacted in this editor; to change it, edit <code class="font-mono text-[var(--color-text-faint)]">.env</code> directly.
+                <strong class="text-[var(--color-text)]">agent.yaml</strong> is editable. Edit any field, hit Save, then Restart agent for changes to apply. Only the <code class="font-mono text-[var(--color-text-faint)]">bot_token</code> line is masked as <code class="font-mono text-[var(--color-text-faint)]">***REDACTED***</code> for safety; if you don't touch that line, your real token is preserved on save.
               </>
             )}
           </div>
           <div class="flex-1 min-h-0">
             <Suspense fallback={<div class="p-6 text-[var(--color-text-faint)] text-[12px]">Loading editor…</div>}>
               <MonacoEditor
+                key={`${agentId}-${tab}`}
                 height="100%"
                 language={language}
                 value={draft}
                 theme={monacoTheme}
                 options={{
+                  // Explicit so a Monaco internal default flip never makes
+                  // this editor inadvertently read-only again. Earlier
+                  // builds shipped a regression where the YAML tab loaded
+                  // text but the keystrokes did nothing — pinning the flag
+                  // here is the cheapest fix.
+                  readOnly: false,
                   minimap: { enabled: false },
                   fontSize: 13.5,
                   fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Monaco, monospace',
@@ -237,6 +244,7 @@ export function AgentFiles() {
                   tabSize: 2,
                   padding: { top: 12, bottom: 12 },
                   automaticLayout: true,
+                  domReadOnly: false,
                 }}
                 onChange={(v) => {
                   const next = v ?? '';
