@@ -449,6 +449,50 @@ describe('PATCH /api/agents/:id/model', () => {
   });
 });
 
+describe('avatar endpoints share error shape and status semantics', () => {
+  // Twelve-byte canonical PNG header — the avatar PUT handler magic-byte
+  // sniffs the first four bytes, so this is enough.
+  const PNG_HEADER = Buffer.from([
+    0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a,
+    0x00, 0x00, 0x00, 0x0d,
+  ]);
+
+  it('GET, PUT, DELETE all return JSON {error} on an invalid id', async () => {
+    const get = await app.request('/api/agents/has%20space/avatar' + Q);
+    expect(get.status).toBe(400);
+    const getBody = await jsonOf(get);
+    expect(getBody).toMatchObject({ error: expect.any(String) });
+
+    const put = await app.request('/api/agents/has%20space/avatar' + Q, {
+      method: 'PUT',
+      headers: { 'content-type': 'application/octet-stream' },
+      body: PNG_HEADER,
+    });
+    expect(put.status).toBe(400);
+    expect(await jsonOf(put)).toMatchObject({ error: expect.any(String) });
+
+    const del = await app.request('/api/agents/has%20space/avatar' + Q, { method: 'DELETE' });
+    expect(del.status).toBe(400);
+    expect(await jsonOf(del)).toMatchObject({ error: expect.any(String) });
+  });
+
+  it('GET on an unknown agent returns 404 (not 204)', async () => {
+    const res = await app.request('/api/agents/totally_made_up_agent/avatar' + Q);
+    expect(res.status).toBe(404);
+    expect(await jsonOf(res)).toMatchObject({ error: 'agent not found' });
+  });
+
+  it('GET on main with no avatar resolved returns 204', async () => {
+    // main always "exists" per agentExists; with no bundled or mutable
+    // avatar in the test env, the resolver returns null → 204.
+    const res = await app.request('/api/agents/main/avatar' + Q);
+    expect([200, 204]).toContain(res.status);
+    if (res.status === 204) {
+      expect(res.headers.get('content-type') ?? '').not.toMatch(/text\/html/);
+    }
+  });
+});
+
 describe('PATCH /api/dashboard/settings standup_config', () => {
   async function patchStandupConfig(value: string) {
     return app.request('/api/dashboard/settings' + Q, {

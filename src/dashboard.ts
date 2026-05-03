@@ -68,7 +68,7 @@ import {
 import { computeNextRun } from './scheduler.js';
 import { generateContent, parseJsonResponse } from './gemini.js';
 import { getSecurityStatus } from './security.js';
-import { listAgentIds, loadAgentConfig, resolveAgentDir, setAgentModel } from './agent-config.js';
+import { AGENT_ID_RE, agentExists, listAgentIds, loadAgentConfig, resolveAgentDir, setAgentModel } from './agent-config.js';
 import {
   resolveAgentAvatar,
   avatarEtag,
@@ -2576,7 +2576,8 @@ export function buildDashboardApp(botApi?: Api<RawApi>): Hono {
   // a new tag and the browser revalidates.
   app.get('/api/agents/:id/avatar', async (c) => {
     const agentId = c.req.param('id');
-    if (!/^[a-z0-9_-]+$/i.test(agentId)) return c.text('', 400);
+    if (!AGENT_ID_RE.test(agentId)) return c.json({ error: 'invalid id' }, 400);
+    if (!agentExists(agentId)) return c.json({ error: 'agent not found' }, 404);
     const ctxQ = c.req.query('context');
     const context: 'default' | 'meet' = ctxQ === 'meet' ? 'meet' : 'default';
 
@@ -2649,11 +2650,8 @@ export function buildDashboardApp(botApi?: Api<RawApi>): Hono {
   // (/setuserpic). The frontend surfaces the manual step.
   app.put('/api/agents/:id/avatar', async (c) => {
     const agentId = c.req.param('id');
-    if (!/^[a-z0-9_-]+$/i.test(agentId)) return c.json({ error: 'invalid id' }, 400);
-    if (agentId !== 'main') {
-      try { resolveAgentDir(agentId); }
-      catch { return c.json({ error: 'agent not found' }, 404); }
-    }
+    if (!AGENT_ID_RE.test(agentId)) return c.json({ error: 'invalid id' }, 400);
+    if (!agentExists(agentId)) return c.json({ error: 'agent not found' }, 404);
 
     // Two upload modes — multipart/form-data with `image` field, or
     // application/octet-stream with the raw bytes (handier for CLI).
@@ -2700,11 +2698,8 @@ export function buildDashboardApp(botApi?: Api<RawApi>): Hono {
 
   app.delete('/api/agents/:id/avatar', async (c) => {
     const agentId = c.req.param('id');
-    if (!/^[a-z0-9_-]+$/i.test(agentId)) return c.json({ error: 'invalid id' }, 400);
-    if (agentId !== 'main') {
-      try { resolveAgentDir(agentId); }
-      catch { return c.json({ error: 'agent not found' }, 404); }
-    }
+    if (!AGENT_ID_RE.test(agentId)) return c.json({ error: 'invalid id' }, 400);
+    if (!agentExists(agentId)) return c.json({ error: 'agent not found' }, 404);
     try {
       await deleteUploadedAvatar(agentId);
       insertAuditLog(agentId, '', 'delete_avatar', '', false);

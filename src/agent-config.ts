@@ -11,6 +11,28 @@ import { readEnvFile } from './env.js';
 // full bot restart.
 export const WARROOM_ROSTER_PATH = '/tmp/warroom-agents.json';
 
+/** Single source of truth for "is this string a syntactically valid
+ *  agent id?". Lifted out of the various inline copies in the dashboard
+ *  HTTP layer so the avatar / chat / agent-files handlers all share one
+ *  definition. Lower-case alphanumerics plus `_` and `-`; `i` flag is
+ *  kept for backwards compatibility with the historical regex. */
+export const AGENT_ID_RE = /^[a-z0-9_-]+$/i;
+
+/** Cheap "does this agent exist on disk?" check. `main` always exists
+ *  (it's the root process); any other id needs an `agent.yaml` next to
+ *  resolveAgentDir(id). Returns false for syntactically invalid ids so
+ *  callers can use this as the only existence check they need. */
+export function agentExists(agentId: string): boolean {
+  if (!AGENT_ID_RE.test(agentId)) return false;
+  if (agentId === 'main') return true;
+  try {
+    const dir = resolveAgentDir(agentId);
+    return fs.existsSync(path.join(dir, 'agent.yaml'));
+  } catch {
+    return false;
+  }
+}
+
 export interface AgentConfig {
   name: string;
   description: string;
