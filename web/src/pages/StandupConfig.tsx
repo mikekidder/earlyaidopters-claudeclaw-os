@@ -186,7 +186,7 @@ export function StandupConfigPane() {
         <div class="px-4 py-3 border-b border-[var(--color-border)] flex items-center justify-between">
           <div class="text-[10px] uppercase tracking-wider text-[var(--color-text-faint)]">Agents</div>
           <div class="text-[11px] text-[var(--color-text-muted)] tabular-nums">
-            {willSpeak.length} will speak · {willSkip.length} deferred (over cap) · {agents.length - enabledOrdered.length} disabled
+            {willSpeak.length} will speak · {willSkip.length} in rotation · {agents.length - enabledOrdered.length} disabled
           </div>
         </div>
         <ul class="divide-y divide-[var(--color-border)]">
@@ -216,7 +216,12 @@ export function StandupConfigPane() {
                   )}
                 </div>
                 {isEnabled && !inCap && (
-                  <span class="text-[10px] uppercase tracking-wider text-[var(--color-text-faint)]">over cap</span>
+                  <span
+                    class="text-[10px] uppercase tracking-wider text-[var(--color-text-faint)]"
+                    title="Speaks on a later /standup once rotation cycles to this slot."
+                  >
+                    rotation queue
+                  </span>
                 )}
                 {isEnabled && inCap && enabledIdx === 0 && (
                   <span class="text-[10px] uppercase tracking-wider text-[var(--color-accent)]">leads</span>
@@ -276,6 +281,13 @@ export function StandupConfigPane() {
           <span>1</span>
           <span>{MAX_CAP}</span>
         </div>
+        {willSkip.length > 0 && (
+          <p class="text-[10.5px] text-[var(--color-text-faint)] mt-3 leading-relaxed">
+            With more than {maxSpeakers} agents enabled, <code class="font-mono">/standup</code> cycles
+            through the {willSkip.length} in the rotation queue on subsequent calls — the preview above
+            shows the next batch only.
+          </p>
+        )}
       </section>
 
       <section class="flex items-center gap-2">
