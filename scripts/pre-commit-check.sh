@@ -64,7 +64,22 @@ if [ -n "$SENSITIVE" ]; then
   FAILED=1
 fi
 
-# 4. Verify CLAUDE.md uses placeholders (if it's being committed)
+# 4. Refuse working-doc filenames at the repo root or in docs/. These are
+#    planning artifacts (PLAN, SHIP, TESTING, REPORT, audit/smoke results).
+#    They're already gitignored, but a forced `git add -f` would slip them
+#    past the ignore rules — this hook is the second line of defense.
+#    --diff-filter=ACM only flags added/modified — deletions are fine.
+WORKING_DOCS=$(git diff --cached --name-only --diff-filter=ACM | grep -E "^(PLAN|SHIP|TESTING|AUDIT|REPORT|CHECKLIST|REDTEAM|SMOKE|SCRATCH|NOTES)[^/]*\.md$|^test_plan\.md$|^update_plan\.md$|^execute_plan_prompt\.md$|^.+_tldr\.md$|^.+_TLDR\.md$|^PR[0-9]+_(NOTES|TESTING).+\.md$|^docs/(.+-results|.+-smoke|redteam-.+|scratch-.+)\.md$|^docs/internal/" || true)
+if [ -n "$WORKING_DOCS" ]; then
+  echo -e "${RED}BLOCKED: Working / planning docs staged for commit:${NC}"
+  echo "$WORKING_DOCS" | while read f; do echo "  - $f"; done
+  echo "  These look like personal scratch work. Public repo only ships code"
+  echo "  and user-facing docs. Move them outside the repo or rename if you"
+  echo "  intend to ship them (and update the hook + .gitignore accordingly)."
+  FAILED=1
+fi
+
+# 5. Verify CLAUDE.md uses placeholders (if it's being committed)
 if git diff --cached --name-only | grep -q "^CLAUDE.md$"; then
   if ! git show :CLAUDE.md | grep -q "\[YOUR NAME\]"; then
     echo -e "${RED}BLOCKED: CLAUDE.md does not contain [YOUR NAME] placeholders.${NC}"

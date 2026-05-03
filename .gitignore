@@ -52,6 +52,42 @@ start-main.sh
 start-main.bat
 WARROOM_TEST_PLAN.md
 
+# ── Working docs / planning artifacts ─────────────────────────────────
+# Anything matching here is personal scratch work that must never reach
+# the public repo. Names are intentionally broad so a future accidentally-
+# named planning doc gets caught before it can be committed. README.md,
+# CLAUDE.md, CHANGELOG.md, CONTRIBUTING.md and the docs/ files explicitly
+# referenced from the README are NOT matched by these patterns.
+/PLAN*.md
+/SHIP*.md
+/TESTING*.md
+/AUDIT*.md
+/REPORT*.md
+/CHECKLIST*.md
+/REDTEAM*.md
+/SMOKE*.md
+/SCRATCH*.md
+/NOTES*.md
+/test_plan.md
+/update_plan.md
+/execute_plan_prompt.md
+/*_tldr.md
+/*_TLDR.md
+/PR[0-9]*_NOTES*.md
+/PR[0-9]*_TESTING*.md
+/docs/*-results.md
+/docs/*-smoke.md
+/docs/redteam-*.md
+/docs/scratch-*.md
+/docs/internal/
+
+# Diagram generation manifests are scratch input for scripts/generate-diagrams.py
+# Only scripts/diagrams-batch.json is the canonical, tracked manifest.
+/scripts/diagrams-test.json
+/scripts/diagrams-retry.json
+/scripts/diagrams-fix.json
+/scripts/diagrams-scratch*.json
+
 # Generated Windows service wrappers (contain hardcoded paths).
 # Note: launchd/ plists are committed with __PROJECT_DIR__ / __HOME__
 # placeholders, so they stay tracked.
