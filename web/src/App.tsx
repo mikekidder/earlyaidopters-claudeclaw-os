@@ -1,7 +1,9 @@
 import { Route, Switch, Redirect } from 'wouter-preact';
+import { Menu } from 'lucide-preact';
 import { Sidebar } from '@/components/Sidebar';
 import { CommandPalette } from '@/components/CommandPalette';
 import { ToastStack } from '@/components/ToastStack';
+import { sidebarOpen, closeSidebar } from '@/lib/sidebar';
 import { Placeholder } from '@/pages/Placeholder';
 import { MissionControl } from '@/pages/MissionControl';
 import { Memories } from '@/pages/Memories';
@@ -18,10 +20,30 @@ import { AgentFiles } from '@/pages/AgentFiles';
 import { DEFAULT_ROUTE } from '@/lib/routes';
 
 export function App() {
+  const open = sidebarOpen.value;
   return (
     <div class="flex h-screen bg-[var(--color-bg)] text-[var(--color-text)]">
+      {/* Mobile-only hamburger. Hidden on >=md where the sidebar is
+       *  always inline. */}
+      <button
+        type="button"
+        onClick={() => { sidebarOpen.value = true; }}
+        class="md:hidden fixed top-3 left-3 z-50 p-2 rounded-md bg-[var(--color-card)] border border-[var(--color-border)] text-[var(--color-text)] shadow-md"
+        aria-label="Open menu"
+      >
+        <Menu size={18} />
+      </button>
+
+      {/* Backdrop when the mobile drawer is open. Tapping it closes. */}
+      {open && (
+        <div
+          class="md:hidden fixed inset-0 bg-black/60 z-40"
+          onClick={closeSidebar}
+        />
+      )}
+
       <Sidebar />
-      <main class="flex-1 min-w-0 overflow-hidden">
+      <main class="flex-1 min-w-0 overflow-hidden pl-12 md:pl-0">
         <Switch>
           <Route path="/mission"><MissionControl /></Route>
           <Route path="/scheduled"><Scheduled /></Route>

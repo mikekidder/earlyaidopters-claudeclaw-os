@@ -1,10 +1,11 @@
 import { Link, useLocation } from 'wouter-preact';
-import { Search, ChevronDown } from 'lucide-preact';
+import { Search, ChevronDown, X } from 'lucide-preact';
 import { ROUTES, SECTION_LABEL, type RouteSection } from '@/lib/routes';
 import { WorkspaceSwitcher } from './WorkspaceSwitcher';
 import { commandPaletteOpen } from '@/lib/command-palette';
 import { chatUnread } from '@/lib/chat-stream';
 import { useFetch } from '@/lib/useFetch';
+import { sidebarOpen, closeSidebar } from '@/lib/sidebar';
 import {
   collapsedSections,
   toggleSectionCollapsed,
@@ -18,14 +19,36 @@ export function Sidebar() {
   const [pathname] = useLocation();
   const collapsed = collapsedSections.value;
   const modLabel = modKeyLabel();
+  const open = sidebarOpen.value;
+
+  // Mobile: fixed drawer that slides in from the left. Desktop (>=md):
+  // always-visible inline column. Tailwind's `md:` prefix flips between
+  // the two without extra JS.
+  const asideClass = [
+    'flex flex-col h-screen w-[280px] bg-[var(--color-sidebar)] border-r border-[var(--color-border)]',
+    'fixed inset-y-0 left-0 z-50 transform transition-transform duration-200',
+    open ? 'translate-x-0' : '-translate-x-full',
+    'md:static md:translate-x-0 md:w-[260px] md:shrink-0',
+  ].join(' ');
 
   return (
-    <aside class="flex flex-col h-screen w-[260px] shrink-0 bg-[var(--color-sidebar)] border-r border-[var(--color-border)]">
+    <aside class={asideClass}>
       <WorkspaceSwitcher />
+
+      {/* Mobile-only close button. Inline-flex with absolute position so
+       *  it doesn't disturb the existing header layout. */}
+      <button
+        type="button"
+        onClick={closeSidebar}
+        class="md:hidden absolute top-3 right-3 p-1.5 rounded-md text-[var(--color-text-muted)] hover:text-[var(--color-text)] hover:bg-[var(--color-elevated)] transition-colors"
+        aria-label="Close menu"
+      >
+        <X size={16} />
+      </button>
 
       <button
         type="button"
-        onClick={() => { commandPaletteOpen.value = true; }}
+        onClick={() => { commandPaletteOpen.value = true; closeSidebar(); }}
         class="mx-3 mt-1 mb-2 flex items-center gap-2 px-3 py-2 rounded-md text-[var(--color-text-muted)] hover:text-[var(--color-text)] hover:bg-[var(--color-elevated)] transition-colors text-[13px]"
       >
         <Search size={15} />
@@ -61,6 +84,7 @@ export function Sidebar() {
                   <Link
                     key={r.path}
                     href={r.path}
+                    onClick={closeSidebar}
                     class={[
                       'flex items-center gap-2.5 px-3 py-2 rounded-md text-[14px] transition-colors',
                       active
