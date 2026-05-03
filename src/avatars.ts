@@ -240,24 +240,5 @@ export async function deleteUploadedAvatar(agentId: string): Promise<void> {
   });
 }
 
-// ── One-time migration ───────────────────────────────────────────────
-// Previous versions of this code copied bundled <id>.png into mutable
-// storage on first boot. Codex flagged that as a foot-gun: bundled
-// <id>-meet.png is the meet-optimized variant for the Daily.co camera
-// tile, and copying <id>.png into mutable space made the resolver
-// permanently prefer it for ALL contexts, shadowing the meet variant
-// for sub-agents who never actually uploaded a custom avatar.
-//
-// The narrow case the migration tried to cover — a user who uploaded
-// their own main avatar via the OLD dashboard code, which wrote to
-// warroom/avatars/main.png — is naturally handled by the resolver's
-// bundled fallback path. Their photo still serves, just from the
-// bundled namespace. If they later delete and want a true bundled
-// default, they re-upload. Acceptable tradeoff vs corrupting Daily.
-//
-// Kept as a no-op for backwards-compatibility with src/index.ts which
-// still calls it. Removing the call site is fine; this stub is just
-// belt-and-suspenders.
-export function runWarroomAvatarMigration(): void {
-  // Intentionally no-op. See block comment above.
-}
+// no-op kept for backwards compat with src/index.ts call site
+export function runWarroomAvatarMigration(): void {}
