@@ -225,9 +225,10 @@ export const SHOW_COST_FOOTER: CostFooterMode =
   (process.env.SHOW_COST_FOOTER || envConfig.SHOW_COST_FOOTER || 'compact') as CostFooterMode;
 
 // Memory notifications: send Telegram message when high-importance memories are created.
-// Set to 'off' to disable. Default: 'on'.
-export const MEMORY_NOTIFY: boolean =
-  (process.env.MEMORY_NOTIFY || envConfig.MEMORY_NOTIFY || 'on') !== 'off';
+// Default: 'on'. Set to 'off', 'false', or '0' to disable.
+export const MEMORY_NOTIFY: boolean = !['off', 'false', '0'].includes(
+  (process.env.MEMORY_NOTIFY || envConfig.MEMORY_NOTIFY || 'on').toLowerCase(),
+);
 
 // Daily cost budget in USD. Warns at 80%. Set to 0 to disable (default).
 // Only useful for API/pay-per-use users. Subscription users should leave off.
