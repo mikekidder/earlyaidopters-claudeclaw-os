@@ -291,7 +291,7 @@ async function main() {
     if (proceed) {
       console.log();
       info('Running: npm install -g @anthropic-ai/claude-code');
-      const result = spawnSync('npm', ['install', '-g', '@anthropic-ai/claude-code'], { stdio: 'inherit' });
+      const result = spawnSync('npm', ['install', '-g', '@anthropic-ai/claude-code'], { stdio: 'inherit', shell: true });
       if (result.status === 0) {
         ok('Claude Code installed. Run claude login, then npm run setup again.');
       } else {
@@ -341,7 +341,7 @@ async function main() {
     ok('Build output found (dist/)');
   } else {
     warn('Not built yet — building now...');
-    const build = spawnSync('npm', ['run', 'build'], { cwd: PROJECT_ROOT, stdio: 'inherit' });
+    const build = spawnSync('npm', ['run', 'build'], { cwd: PROJECT_ROOT, stdio: 'inherit', shell: true });
     if (build.status === 0) {
       ok('Build complete');
     } else {
@@ -432,11 +432,10 @@ async function main() {
         ? ['py -3.13', 'py -3.12', 'py -3.11', 'py -3.10', 'python']
         : ['python3.13', 'python3.12', 'python3.11', 'python3.10', 'python3'];
       for (const bin of candidates) {
-        // "py -3.13" needs shell:true so the launcher parses the version flag
+        // "py -3.13" is a single command with args — split and invoke directly (no shell needed)
         const parts = bin.split(' ');
         const check = spawnSync(parts[0], [...parts.slice(1), '--version'], {
           stdio: 'pipe',
-          shell: PLATFORM === 'win32',
         });
         if (check.status !== 0) continue;
         const ver = (check.stdout?.toString().trim() || check.stderr?.toString().trim() || '');
@@ -1247,7 +1246,7 @@ async function main() {
     console.log();
     // Rebuild to ensure dist/ matches current source
     info('Building...');
-    const buildResult = spawnSync('npm', ['run', 'build'], { cwd: PROJECT_ROOT, stdio: 'pipe' });
+    const buildResult = spawnSync('npm', ['run', 'build'], { cwd: PROJECT_ROOT, stdio: 'inherit', shell: true });
     if (buildResult.status !== 0) {
       warn('Build failed. Run npm run build to see errors, then npm start.');
     } else {
@@ -1258,7 +1257,7 @@ async function main() {
       // Close readline before handing off to the bot process
       rl.close();
       try {
-        execSync('npm start', { stdio: 'inherit', cwd: PROJECT_ROOT });
+        execSync('npm start', { stdio: 'inherit', cwd: PROJECT_ROOT, shell: true });
       } catch {
         // User hit Ctrl+C or process exited
       }
