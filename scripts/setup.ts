@@ -241,21 +241,19 @@ async function main() {
   // ── 3. System checks ─────────────────────────────────────────────────────
   section('System checks');
 
-  // Early Windows note. The user can still continue, but WSL2 is smoother.
+  // Windows is fully supported. Offer WSL as a neutral alternative, default Yes to continue native.
   if (PLATFORM === 'win32') {
-    warn('Native Windows detected.');
-    info('Native Windows is supported (Task Scheduler for auto-start), but WSL2');
-    info('is the smoother path: most community skills, launchd parity, and the');
-    info('Python voice stack assume a POSIX environment.');
+    ok('Windows detected. Native Windows is fully supported (PM2 for auto-start).');
+    info('WSL2 is also available if you prefer a POSIX environment.');
     console.log();
-    const continueNative = await confirm('Continue with native Windows? (say "n" to exit and switch to WSL2)', true);
+    const continueNative = await confirm('Continue with native Windows?', true);
     if (!continueNative) {
       console.log();
-      info('To switch to WSL2:');
+      info('To set up under WSL2:');
       info('  1. Open PowerShell as Administrator');
       console.log(`  ${c.cyan}  wsl --install -d Ubuntu${c.reset}`);
-      info('  2. Reboot, open the Ubuntu terminal');
-      info('  3. Re-clone ClaudeClaw inside the Ubuntu filesystem (NOT /mnt/c)');
+      info('  2. Reboot, then open the Ubuntu terminal');
+      info('  3. Clone ClaudeClaw inside the Ubuntu filesystem (not /mnt/c)');
       info('  4. Run "npm run setup" from the new clone');
       process.exit(0);
     }
@@ -413,15 +411,33 @@ async function main() {
     info('It requires Python 3.10-3.13 and a Google API key (free tier works).');
     console.log();
 
+    // Detect uv (fast Python package manager). If available, prefer it for venv + pip.
+    let hasUv = false;
+    try {
+      const uvCheck = spawnSync('uv', ['--version'], { stdio: 'pipe' });
+      if (uvCheck.status === 0) {
+        hasUv = true;
+        ok(`uv detected (${uvCheck.stdout?.toString().trim()}). Will use it for faster setup.`);
+      }
+    } catch { /* not installed */ }
+
     // Find a compatible Python (3.10-3.13). onnxruntime doesn't ship wheels for 3.14+.
     const PYTHON_MAX_MINOR = 13;
     const PYTHON_MIN_MINOR = 10;
 
     function findCompatiblePython(): { bin: string; version: string } | null {
-      // Try specific versioned binaries first (most reliable), then generic python3
-      const candidates = ['python3.13', 'python3.12', 'python3.11', 'python3.10', 'python3'];
+      // Try specific versioned binaries first (most reliable), then generic fallbacks.
+      // Windows uses "python" and the "py" launcher; POSIX uses "python3.x" / "python3".
+      const candidates = PLATFORM === 'win32'
+        ? ['py -3.13', 'py -3.12', 'py -3.11', 'py -3.10', 'python']
+        : ['python3.13', 'python3.12', 'python3.11', 'python3.10', 'python3'];
       for (const bin of candidates) {
-        const check = spawnSync(bin, ['--version'], { stdio: 'pipe' });
+        // "py -3.13" needs shell:true so the launcher parses the version flag
+        const parts = bin.split(' ');
+        const check = spawnSync(parts[0], [...parts.slice(1), '--version'], {
+          stdio: 'pipe',
+          shell: PLATFORM === 'win32',
+        });
         if (check.status !== 0) continue;
         const ver = (check.stdout?.toString().trim() || check.stderr?.toString().trim() || '');
         const match = ver.match(/Python\s+3\.(\d+)/);
@@ -439,7 +455,9 @@ async function main() {
       ok(`${pyResult.version} (${pyResult.bin})`);
 
       // Check if venv already exists and deps are installed
-      const venvPython = path.join(PROJECT_ROOT, 'warroom', '.venv', 'bin', 'python');
+      // Windows: .venv\Scripts\python.exe — POSIX: .venv/bin/python
+      const venvBinDir = PLATFORM === 'win32' ? 'Scripts' : 'bin';
+      const venvPython = path.join(PROJECT_ROOT, 'warroom', '.venv', venvBinDir, PLATFORM === 'win32' ? 'python.exe' : 'python');
       const depsInstalled = (): boolean => {
         if (!fs.existsSync(venvPython)) return false;
         const check = spawnSync(venvPython, ['-c', 'import pipecat'], { stdio: 'pipe', timeout: 10000 });
@@ -456,29 +474,55 @@ async function main() {
           let venvOk = !needsVenv;
           if (needsVenv) {
             // spawnSync blocks the event loop, so use a static message instead of a spinner
-            info('Creating Python virtual environment...');
-            const venvResult = spawnSync(pyResult.bin, ['-m', 'venv', path.join(PROJECT_ROOT, 'warroom', '.venv')], { stdio: 'pipe' });
+            const venvPath = path.join(PROJECT_ROOT, 'warroom', '.venv');
+            let venvResult: ReturnType<typeof spawnSync>;
+            if (hasUv) {
+              info('Creating Python virtual environment with uv...');
+              venvResult = spawnSync('uv', ['venv', '--python', pyResult.bin, venvPath], { stdio: 'pipe' });
+            } else {
+              info('Creating Python virtual environment...');
+              venvResult = spawnSync(pyResult.bin, ['-m', 'venv', venvPath], { stdio: 'pipe' });
+            }
             if (venvResult.status === 0) {
               ok('Virtual environment created');
               venvOk = true;
             } else {
               warn('Could not create venv. You can set it up manually later:');
-              info(`  ${pyResult.bin} -m venv warroom/.venv`);
-              info('  source warroom/.venv/bin/activate');
+              if (hasUv) {
+                info(`  uv venv --python ${pyResult.bin} warroom/.venv`);
+              } else {
+                info(`  ${pyResult.bin} -m venv warroom/.venv`);
+              }
+              if (PLATFORM === 'win32') {
+                info('  warroom\\.venv\\Scripts\\activate');
+              } else {
+                info('  source warroom/.venv/bin/activate');
+              }
               info('  pip install -r warroom/requirements.txt');
             }
           }
           if (venvOk) {
-            // Use stdio: 'inherit' so the user sees pip output in real time.
+            // Use stdio: 'inherit' so the user sees pip/uv output in real time.
             // spawnSync blocks the event loop, so a spinner would never animate.
             console.log();
-            info('Installing War Room dependencies (this may take ~60 seconds)...');
-            console.log();
-            const pipResult = spawnSync(
-              path.join(PROJECT_ROOT, 'warroom', '.venv', 'bin', 'pip'),
-              ['install', '-r', path.join(PROJECT_ROOT, 'warroom', 'requirements.txt')],
-              { stdio: 'inherit', timeout: 300000 },
-            );
+            const reqsFile = path.join(PROJECT_ROOT, 'warroom', 'requirements.txt');
+            let pipResult: ReturnType<typeof spawnSync>;
+            if (hasUv) {
+              info('Installing War Room dependencies with uv...');
+              console.log();
+              pipResult = spawnSync(
+                'uv', ['pip', 'install', '--python', venvPython, '-r', reqsFile],
+                { stdio: 'inherit', timeout: 300000 },
+              );
+            } else {
+              info('Installing War Room dependencies (this may take ~60 seconds)...');
+              console.log();
+              pipResult = spawnSync(
+                path.join(PROJECT_ROOT, 'warroom', '.venv', venvBinDir, PLATFORM === 'win32' ? 'pip.exe' : 'pip'),
+                ['install', '-r', reqsFile],
+                { stdio: 'inherit', timeout: 300000 },
+              );
+            }
             if (pipResult.status === 0) {
               ok('War Room dependencies installed');
               warRoomReady = true;
@@ -488,26 +532,44 @@ async function main() {
               info('To fix, run these commands and then re-run npm run setup:');
               console.log();
               console.log(`  ${c.cyan}cd ${PROJECT_ROOT}${c.reset}`);
-              console.log(`  ${c.cyan}source warroom/.venv/bin/activate${c.reset}`);
-              console.log(`  ${c.cyan}pip install -r warroom/requirements.txt${c.reset}`);
+              if (hasUv) {
+                console.log(`  ${c.cyan}uv pip install --python warroom/.venv/${venvBinDir}/python -r warroom/requirements.txt${c.reset}`);
+              } else {
+                if (PLATFORM === 'win32') {
+                  console.log(`  ${c.cyan}warroom\\.venv\\Scripts\\activate${c.reset}`);
+                } else {
+                  console.log(`  ${c.cyan}source warroom/.venv/bin/activate${c.reset}`);
+                }
+                console.log(`  ${c.cyan}pip install -r warroom/requirements.txt${c.reset}`);
+              }
             }
           }
         }
       }
     } else {
       // Check if they have Python but it's too new
-      const anyPy = spawnSync('python3', ['--version'], { stdio: 'pipe' });
+      const fallbackBin = PLATFORM === 'win32' ? 'python' : 'python3';
+      const anyPy = spawnSync(fallbackBin, ['--version'], { stdio: 'pipe' });
       if (anyPy.status === 0) {
         const ver = anyPy.stdout?.toString().trim() || anyPy.stderr?.toString().trim() || '';
         warn(`${ver} found, but War Room requires Python 3.10-3.13.`);
         info('onnxruntime (used for voice activity detection) doesn\'t support 3.14+ yet.');
         info('Install a compatible version:');
-        bullet('Mac: brew install python@3.13');
-        bullet('Linux: sudo apt install python3.13 python3.13-venv');
       } else {
         warn('Python 3 not found. You need Python 3.10-3.13 for the War Room.');
         info('Install Python:');
+      }
+      // Show install instructions — uv first if available, then platform-specific
+      if (hasUv) {
+        bullet('uv python install 3.13');
+        info('(uv will download and manage the Python version for you)');
+      } else if (PLATFORM === 'win32') {
+        bullet('Windows: Download from https://www.python.org/downloads/');
+        bullet('  or: winget install Python.Python.3.13');
+        bullet('  Make sure "Add python.exe to PATH" is checked during install.');
+      } else if (PLATFORM === 'darwin') {
         bullet('Mac: brew install python@3.13');
+      } else {
         bullet('Linux: sudo apt install python3.13 python3.13-venv');
       }
       info('Then re-run npm run setup to enable the War Room.');
@@ -1324,22 +1386,88 @@ WantedBy=default.target
 async function setupWindows() {
   section('Auto-start (Windows)');
 
-  warn('Windows detected. WSL2 is the smoother path, but native works too.');
-  console.log();
-  info('A: WSL2 (recommended if you haven\'t started yet).');
-  info('  Run "wsl --install -d Ubuntu" in an elevated PowerShell, reboot,');
-  info('  clone ClaudeClaw inside the Ubuntu filesystem (not /mnt/c), and');
-  info('  re-run this setup from inside WSL2. Keep ~/.claude/ inside WSL2.');
-  console.log();
-  info('B: Native Windows (Task Scheduler).');
-  info('  Registers a per-user scheduled task that runs at logon.');
-  info('  No admin rights needed. Logs go to logs\\main.log.');
+  info('PM2 is the recommended way to keep ClaudeClaw running on Windows.');
+  info('It handles restart-on-crash, log rotation, and startup persistence.');
   console.log();
 
-  const installNative = await confirm('Install the native Windows auto-start task now?', false);
-  if (!installNative) {
+  // Check if PM2 is already installed
+  let pm2Available = false;
+  try {
+    execSync('pm2 --version', { stdio: 'pipe' });
+    pm2Available = true;
+  } catch { /* not installed */ }
+
+  if (!pm2Available) {
+    info('PM2 is not installed. Install it globally first:');
+    console.log(`  ${c.cyan}npm install -g pm2${c.reset}`);
+    console.log();
+    const installPm2 = await confirm('Install PM2 now?', true);
+    if (installPm2) {
+      const s = spinner('Installing PM2...');
+      try {
+        execSync('npm install -g pm2', { stdio: 'pipe' });
+        pm2Available = true;
+        s.stop('ok', 'PM2 installed');
+      } catch (err) {
+        s.stop('warn', 'Could not install PM2 automatically');
+        const errMsg = err instanceof Error ? err.message : String(err);
+        info(`Error: ${errMsg}`);
+        info('Try running "npm install -g pm2" manually in an elevated terminal.');
+        console.log();
+      }
+    }
+  }
+
+  if (pm2Available) {
+    const setupPm2 = await confirm('Set up PM2 to manage ClaudeClaw?', true);
+    if (setupPm2) {
+      const s = spinner('Configuring PM2...');
+      try {
+        const entry = path.join(PROJECT_ROOT, 'dist', 'index.js');
+
+        // Stop any existing instance
+        try { execSync('pm2 delete claudeclaw', { stdio: 'ignore' }); } catch { /* not running */ }
+
+        // Start with PM2
+        execSync(
+          `pm2 start "${entry}" --name claudeclaw --cwd "${PROJECT_ROOT}" --env NODE_ENV=production`,
+          { stdio: 'pipe' },
+        );
+
+        // Save process list and set up startup
+        execSync('pm2 save', { stdio: 'pipe' });
+        s.stop('ok', 'ClaudeClaw is running under PM2');
+
+        console.log();
+        info('Manage it with:');
+        console.log(`  ${c.cyan}pm2 status${c.reset}              ${c.gray}# check status${c.reset}`);
+        console.log(`  ${c.cyan}pm2 logs claudeclaw${c.reset}     ${c.gray}# view logs${c.reset}`);
+        console.log(`  ${c.cyan}pm2 restart claudeclaw${c.reset}  ${c.gray}# restart${c.reset}`);
+        console.log(`  ${c.cyan}pm2 stop claudeclaw${c.reset}     ${c.gray}# stop${c.reset}`);
+        console.log();
+        info('To start PM2 automatically on boot:');
+        console.log(`  ${c.cyan}pm2 startup${c.reset}`);
+        info('Follow the instructions it prints, then run:');
+        console.log(`  ${c.cyan}pm2 save${c.reset}`);
+        return;
+      } catch (err) {
+        s.stop('warn', 'PM2 setup encountered an issue');
+        const errMsg = err instanceof Error ? err.message : String(err);
+        info(`Error: ${errMsg}`);
+        console.log();
+        info('Falling back to Task Scheduler option...');
+        console.log();
+      }
+    }
+  }
+
+  // Fallback: Task Scheduler
+  info('Alternative: Windows Task Scheduler (runs at logon).');
+  console.log();
+  const installTask = await confirm('Install a Task Scheduler auto-start entry?', !pm2Available);
+  if (!installTask) {
     info('Skipped. You can start the bot manually with: npm start');
-    info('Or re-run "npm run setup" later to install the service.');
+    info('Or re-run "npm run setup" later to configure auto-start.');
     return;
   }
 
@@ -1377,7 +1505,7 @@ ${q(process.execPath)} ${q(entry)} >> ${q(logFile)} 2>&1\r
     s.stop('ok', `Scheduled task installed: ${label}`);
 
     console.log();
-    info(`Manage it from:`);
+    info('Manage it with:');
     console.log(`  ${c.cyan}schtasks /Query /TN "${label}"${c.reset}`);
     console.log(`  ${c.cyan}schtasks /End /TN "${label}"${c.reset}     ${c.gray}# stop${c.reset}`);
     console.log(`  ${c.cyan}schtasks /Run /TN "${label}"${c.reset}     ${c.gray}# start${c.reset}`);
@@ -1388,11 +1516,7 @@ ${q(process.execPath)} ${q(entry)} >> ${q(logFile)} 2>&1\r
     s.stop('warn', 'Could not register scheduled task automatically');
     const errMsg = err instanceof Error ? err.message : String(err);
     printWindowsHandoff('Installing the ClaudeClaw auto-start scheduled task', errMsg, 'scripts/setup.ts (setupWindows function)');
-    info('Quick manual fallback if you prefer: start with "npm start" in a terminal,');
-    info('or use PM2:');
-    console.log(`  ${c.cyan}npm install -g pm2${c.reset}`);
-    console.log(`  ${c.cyan}pm2 start dist/index.js --name claudeclaw${c.reset}`);
-    console.log(`  ${c.cyan}pm2 save && pm2 startup${c.reset}`);
+    info('You can start the bot manually with: npm start');
   }
 }
 
