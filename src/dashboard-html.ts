@@ -1217,11 +1217,14 @@ async function loadMeetAgentOptions() {
   if (!selAvatar && !selDaily) return;
   try {
     const data = await api('/api/agents');
+    // /api/agents already returns main with its display name from
+    // agent.yaml, so populate the map purely from the response. The
+    // capitalize fallback covers an agent whose entry lacks a name.
     var agentMap = {};
-    agentMap['main'] = 'Main';
     if (data && Array.isArray(data.agents)) {
       for (const a of data.agents) if (a && a.id) agentMap[a.id] = a.name || (a.id.charAt(0).toUpperCase() + a.id.slice(1));
     }
+    if (!agentMap['main']) agentMap['main'] = 'Main';
     var sorted = ['main', ...Object.keys(agentMap).filter(function(x){ return x !== 'main'; }).sort()];
     const optionsHtml = sorted.map(function(id) {
       return '<option value="' + id + '">' + (agentMap[id] || id) + '</option>';

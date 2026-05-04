@@ -13,7 +13,9 @@
 // Env vars are set by `src/test-env-setup.ts` (vitest setupFiles) so they
 // land BEFORE config.ts evaluates at import time.
 
-import { describe, it, expect, beforeAll, beforeEach } from 'vitest';
+import { describe, it, expect, beforeAll, beforeEach, afterAll } from 'vitest';
+import fs from 'fs';
+import path from 'path';
 import { _initTestDatabase } from './db.js';
 import { buildDashboardApp } from './dashboard.js';
 import type { Hono } from 'hono';
@@ -217,6 +219,52 @@ describe('GET /api/agents', () => {
         running: expect.any(Boolean),
       });
     }
+  });
+});
+
+// Regression: PR #45 review (Mark) — the main agent's display name must
+// be read from agent.yaml everywhere. A user who renames their main
+// agent (e.g. "Felix") should see Felix in /api/agents AND
+// /api/warroom/agents, never the hardcoded literal "Main".
+describe('main agent display name resolution', () => {
+  const configDir = process.env.CLAUDECLAW_CONFIG!;
+  const mainAgentDir = path.join(configDir, 'agents', 'main');
+  const mainYaml = path.join(mainAgentDir, 'agent.yaml');
+
+  beforeAll(() => {
+    fs.mkdirSync(mainAgentDir, { recursive: true });
+    fs.writeFileSync(
+      mainYaml,
+      [
+        'name: Felix',
+        'description: A custom assistant',
+        'telegram_bot_token_env: TELEGRAM_BOT_TOKEN',
+        'model: claude-sonnet-4-6',
+      ].join('\n'),
+      'utf-8',
+    );
+  });
+
+  afterAll(() => {
+    try { fs.rmSync(mainYaml); } catch { /* ignore */ }
+    try { fs.rmdirSync(mainAgentDir); } catch { /* ignore */ }
+  });
+
+  it('GET /api/agents returns the agent.yaml name for main, not "Main"', async () => {
+    const res = await get('/api/agents');
+    const body = await jsonOf(res);
+    const main = body.agents.find((a: { id: string }) => a.id === 'main');
+    expect(main).toBeDefined();
+    expect(main.name).toBe('Felix');
+    expect(main.description).toBe('A custom assistant');
+  });
+
+  it('GET /api/warroom/agents returns the agent.yaml name for main, not "Main"', async () => {
+    const res = await get('/api/warroom/agents');
+    const body = await jsonOf(res);
+    const main = body.agents.find((a: { id: string }) => a.id === 'main');
+    expect(main).toBeDefined();
+    expect(main.name).toBe('Felix');
   });
 });
 

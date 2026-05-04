@@ -1917,7 +1917,10 @@ export function buildDashboardApp(botApi?: Api<RawApi>): Hono {
     const hasMain = agentIds.includes('main');
     let allAgents = agents;
     if (!hasMain) {
-      // No agents/main/agent.yaml — add a fallback entry
+      // No agents/main/agent.yaml in listAgentIds() — try loading main's
+      // config directly so a user who customized name/description/model
+      // still sees their values. Falls back to capitalised id (matches
+      // the per-agent fallback pattern) only if the load throws.
       const mainPidFile = path.join(STORE_DIR, 'claudeclaw.pid');
       let mainRunning = false;
       if (fs.existsSync(mainPidFile)) {
@@ -1927,10 +1930,35 @@ export function buildDashboardApp(botApi?: Api<RawApi>): Hono {
         } catch { /* not running */ }
       }
       const mainStats = getAgentTokenStats('main');
-      allAgents = [
-        { id: 'main', name: 'Main', description: 'Primary ClaudeClaw bot', model: getMainModelOverride() ?? 'claude-opus-4-6', running: mainRunning, todayTurns: mainStats.todayTurns, todayCost: mainStats.todayCost, avatar_etag: avatarEtagForId('main') },
-        ...agents,
-      ];
+      let mainEntry: {
+        id: string; name: string; description: string; model: string;
+        running: boolean; todayTurns: number; todayCost: number; avatar_etag: string;
+      };
+      try {
+        const cfg = loadAgentConfig('main');
+        mainEntry = {
+          id: 'main',
+          name: cfg.name,
+          description: cfg.description,
+          model: getMainModelOverride() ?? cfg.model ?? 'claude-opus-4-6',
+          running: mainRunning,
+          todayTurns: mainStats.todayTurns,
+          todayCost: mainStats.todayCost,
+          avatar_etag: avatarEtagForId('main'),
+        };
+      } catch {
+        mainEntry = {
+          id: 'main',
+          name: 'Main',
+          description: 'Primary ClaudeClaw bot',
+          model: getMainModelOverride() ?? 'claude-opus-4-6',
+          running: mainRunning,
+          todayTurns: mainStats.todayTurns,
+          todayCost: mainStats.todayCost,
+          avatar_etag: avatarEtagForId('main'),
+        };
+      }
+      allAgents = [mainEntry, ...agents];
     } else {
       // main exists in agentIds — move it to the front
       allAgents = [

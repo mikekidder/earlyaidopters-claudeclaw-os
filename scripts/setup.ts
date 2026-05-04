@@ -1188,10 +1188,11 @@ async function main() {
         fs.copyFileSync(templateClaudeMd, destClaudeMd);
       }
 
-      // Create agent.yaml from example
+      // Create agent.yaml from example. Guard with !fs.existsSync so a
+      // user re-running setup doesn't lose a customised name/description.
       const exampleYaml = path.join(PROJECT_ROOT, 'agents', templateId, 'agent.yaml.example');
       const destYaml = path.join(agentDir, 'agent.yaml');
-      if (fs.existsSync(exampleYaml)) {
+      if (fs.existsSync(exampleYaml) && !fs.existsSync(destYaml)) {
         let yamlContent = fs.readFileSync(exampleYaml, 'utf-8');
         yamlContent = yamlContent.replace(/telegram_bot_token_env:.*/, `telegram_bot_token_env: ${envKey}`);
         if (templateId === '_template') {
