@@ -3,7 +3,10 @@ import { ShieldAlert, ShieldCheck } from 'lucide-preact';
 import { PageHeader, Tab } from '@/components/PageHeader';
 import { PageState } from '@/components/PageState';
 import { apiGet } from '@/lib/api';
+import { useFetch } from '@/lib/useFetch';
 import { formatRelativeTime } from '@/lib/format';
+
+interface AgentInfo { id: string; name: string }
 
 interface AuditEntry {
   id: number;
@@ -30,6 +33,12 @@ export function Audit() {
   // disappear (the previous version derived chips from the currently
   // loaded rows, which collapsed once you filtered).
   const [knownAgents, setKnownAgents] = useState<string[]>([]);
+  const agentList = useFetch<{ agents: AgentInfo[] }>('/api/agents', 60_000);
+  const agentNameMap = new Map<string, string>(
+    (agentList.data?.agents ?? []).map((a) => [a.id, a.name]),
+  );
+  const resolveAgentName = (id: string) =>
+    agentNameMap.get(id) || id.charAt(0).toUpperCase() + id.slice(1);
 
   useEffect(() => {
     setItems([]); setOffset(0); setLoading(true);
@@ -74,7 +83,7 @@ export function Audit() {
                 <span class="mx-1 text-[var(--color-text-faint)]">·</span>
                 <Tab label="Any agent" active={agentFilter === 'all'} onClick={() => setAgentFilter('all')} />
                 {agentIds.map((id) => (
-                  <Tab key={id} label={id} active={agentFilter === id} onClick={() => setAgentFilter(id)} />
+                  <Tab key={id} label={resolveAgentName(id)} active={agentFilter === id} onClick={() => setAgentFilter(id)} />
                 ))}
               </>
             )}
@@ -106,7 +115,7 @@ export function Audit() {
                   <td class="px-6 py-2 text-[var(--color-text-faint)] tabular-nums whitespace-nowrap">
                     {formatRelativeTime(e.created_at)}
                   </td>
-                  <td class="px-3 py-2 text-[var(--color-text-muted)]">{e.agent_id}</td>
+                  <td class="px-3 py-2 text-[var(--color-text-muted)]">{resolveAgentName(e.agent_id)}</td>
                   <td class="px-3 py-2 font-mono text-[11px] text-[var(--color-text)]">{e.action}</td>
                   <td class="px-3 py-2 text-center">
                     {e.blocked === 1 ? (

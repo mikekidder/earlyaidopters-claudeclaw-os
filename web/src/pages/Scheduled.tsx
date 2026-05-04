@@ -50,6 +50,12 @@ function loadView(): ViewMode {
 
 export function Scheduled() {
   const { data, loading, error, refresh } = useFetch<{ tasks: ScheduledTask[] }>('/api/tasks', 30_000);
+  const agentList = useFetch<{ agents: { id: string; name: string }[] }>('/api/agents', 60_000);
+  const agentNameMap = new Map<string, string>(
+    (agentList.data?.agents ?? []).map((a) => [a.id, a.name]),
+  );
+  const resolveAgentName = (id: string) =>
+    agentNameMap.get(id) || id.charAt(0).toUpperCase() + id.slice(1);
   const tasks = data?.tasks ?? [];
   const [view, setView] = useState<ViewMode>(loadView());
   const [selected, setSelected] = useState<Set<string>>(new Set());
@@ -176,6 +182,7 @@ export function Scheduled() {
                 onAction={(a) => action(t, a)}
                 onDeleteRequest={() => { setPendingSingle(t); setConfirmOpen('single'); }}
                 onEdit={() => setEditing(t)}
+                resolveAgentName={resolveAgentName}
               />
             ))}
           </div>
@@ -216,6 +223,7 @@ export function Scheduled() {
                   onAction={(a) => action(t, a)}
                   onDeleteRequest={() => { setPendingSingle(t); setConfirmOpen('single'); }}
                   onEdit={() => setEditing(t)}
+                  resolveAgentName={resolveAgentName}
                 />
               ))}
             </tbody>
@@ -295,9 +303,10 @@ interface RowProps {
   onAction: (a: 'pause' | 'resume') => void;
   onDeleteRequest: () => void;
   onEdit: () => void;
+  resolveAgentName: (id: string) => string;
 }
 
-function TaskCard({ task, blurOn, selected, onToggleSelect, onAction, onDeleteRequest, onEdit }: RowProps) {
+function TaskCard({ task, blurOn, selected, onToggleSelect, onAction, onDeleteRequest, onEdit, resolveAgentName }: RowProps) {
   const [showResult, setShowResult] = useState(false);
   const [revealed, setRevealed] = useState(false);
   const statusTone = task.status === 'running' ? 'running' : task.status === 'paused' ? 'cancelled' : 'done';
@@ -335,7 +344,7 @@ function TaskCard({ task, blurOn, selected, onToggleSelect, onAction, onDeleteRe
               <span class="text-[var(--color-accent)] tabular-nums">{formatCountdown(task.next_run)}</span>
             )}
             <Pill tone={statusTone}>{task.status}</Pill>
-            {task.agent_id !== 'main' && <span class="font-mono">@{task.agent_id}</span>}
+            {task.agent_id !== 'main' && <span class="font-mono">@{resolveAgentName(task.agent_id)}</span>}
             {task.last_status && (
               <Pill tone={task.last_status === 'success' ? 'done' : task.last_status === 'timeout' ? 'medium' : 'failed'}>
                 last: {task.last_status}
@@ -368,7 +377,7 @@ function TaskCard({ task, blurOn, selected, onToggleSelect, onAction, onDeleteRe
   );
 }
 
-function TaskListRow({ task, blurOn, selected, onToggleSelect, onAction, onDeleteRequest, onEdit }: RowProps) {
+function TaskListRow({ task, blurOn, selected, onToggleSelect, onAction, onDeleteRequest, onEdit, resolveAgentName }: RowProps) {
   const [revealed, setRevealed] = useState(false);
   const statusTone = task.status === 'running' ? 'running' : task.status === 'paused' ? 'cancelled' : 'done';
   const blurClass = blurOn && !revealed ? 'privacy-blur' : (blurOn && revealed ? 'privacy-blur revealed' : '');
@@ -409,7 +418,7 @@ function TaskListRow({ task, blurOn, selected, onToggleSelect, onAction, onDelet
         )}
       </td>
       <td class="px-3 py-2.5 font-mono text-[11px] text-[var(--color-text-muted)] whitespace-nowrap">
-        @{task.agent_id}
+        @{resolveAgentName(task.agent_id)}
       </td>
       <td class="px-3 py-2.5 text-right whitespace-nowrap">
         <RowActions task={task} onAction={onAction} onDeleteRequest={onDeleteRequest} />

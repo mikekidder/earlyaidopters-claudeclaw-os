@@ -76,11 +76,26 @@ export interface RosterAgent {
   description: string;
 }
 
-const MAIN_AGENT: RosterAgent = {
-  id: 'main',
-  name: 'Main',
-  description: 'General ops and triage',
-};
+/** Resolve a display label for any agent id using the current roster. */
+function agentLabel(agentId: string, roster?: RosterAgent[]): string {
+  const r = roster ?? getRoster();
+  const entry = r.find((a) => a.id === agentId);
+  if (entry) return entry.name;
+  return agentId.charAt(0).toUpperCase() + agentId.slice(1);
+}
+
+/**
+ * Resolve the main agent's roster entry from config, falling back to
+ * capitalised-id defaults only when no agents/main/agent.yaml exists.
+ */
+function resolveMainAgent(): RosterAgent {
+  try {
+    const cfg = loadAgentConfig('main');
+    return { id: 'main', name: cfg.name || 'Main', description: cfg.description || '' };
+  } catch {
+    return { id: 'main', name: 'Main', description: '' };
+  }
+}
 
 /**
  * Full roster for a text War Room. Main is always first. Other agents
@@ -92,7 +107,7 @@ export function getRoster(): RosterAgent[] {
   const extras = listAllAgents()
     .filter((a) => a.id !== 'main')
     .map((a) => ({ id: a.id, name: a.name, description: a.description }));
-  return [MAIN_AGENT, ...extras];
+  return [resolveMainAgent(), ...extras];
 }
 
 // ── Public API ────────────────────────────────────────────────────────
@@ -1503,7 +1518,7 @@ async function runAgentTurn(args: RunAgentTurnArgs): Promise<string> {
     type: 'status_update',
     turnId,
     phase: 'streaming',
-    label: `${agentId === 'main' ? 'Main' : agentId} is typing…`,
+    label: `${agentLabel(agentId)} is typing…`,
     agentId,
   });
 
@@ -1663,7 +1678,7 @@ async function runAgentTurn(args: RunAgentTurnArgs): Promise<string> {
               channel.emit({
                 type: 'system_note',
                 turnId,
-                text: `${agentId === 'main' ? 'Main' : agentId} hit the per-turn tool budget (${TOOL_BUDGET_PER_TURN} calls). Asking them to wrap up.`,
+                text: `${agentLabel(agentId)} hit the per-turn tool budget (${TOOL_BUDGET_PER_TURN} calls). Asking them to wrap up.`,
                 tone: 'warn',
                 dismissable: true,
               });
@@ -1830,7 +1845,7 @@ async function runAgentTurn(args: RunAgentTurnArgs): Promise<string> {
       reason: timedOut ? 'agent timed out' : (incomplete ? 'cancelled before content' : 'no content'),
     });
     if (role === 'primary') {
-      const agentLabel = agentId === 'main' ? 'Main' : agentId;
+      const displayName = agentLabel(agentId);
       // Build a richer fallback when we know the agent ran out of headroom
       // mid-tool-loop. Empty text + tool calls + max_turns stop reason =
       // "did real work, ran out of room before finalizing." Surface what
@@ -1840,19 +1855,19 @@ async function runAgentTurn(args: RunAgentTurnArgs): Promise<string> {
       let note: string;
       if (hitMaxTurns && usedTools.length > 0) {
         const toolList = usedTools.slice(0, 4).join(', ') + (usedTools.length > 4 ? `, +${usedTools.length - 4} more` : '');
-        note = `${agentLabel} ran out of turns mid-task (tools used: ${toolList}). Ask them what landed and what's still pending, or break the request into smaller asks.`;
+        note = `${displayName} ran out of turns mid-task (tools used: ${toolList}). Ask them what landed and what's still pending, or break the request into smaller asks.`;
       } else if (timedOut) {
-        note = `${agentLabel} ran past its time budget without finishing. Try again, narrow the question, or @-mention a specific agent.`;
+        note = `${displayName} ran past its time budget without finishing. Try again, narrow the question, or @-mention a specific agent.`;
       } else if (incomplete) {
-        note = `${agentLabel} was cancelled before sending a reply.`;
+        note = `${displayName} was cancelled before sending a reply.`;
       } else if (usedTools.length > 0) {
         // Tools fired but no final text and we didn't hit max_turns — the
         // agent likely got into a state it couldn't recover from. Same
         // surface, slightly different framing.
         const toolList = usedTools.slice(0, 4).join(', ');
-        note = `${agentLabel} called ${toolList} but didn't finalize a reply. Ask them what happened, or @-mention another agent.`;
+        note = `${displayName} called ${toolList} but didn't finalize a reply. Ask them what happened, or @-mention another agent.`;
       } else {
-        note = `${agentLabel} didn't produce a reply. Try rephrasing or @-mention a specific agent.`;
+        note = `${displayName} didn't produce a reply. Try rephrasing or @-mention a specific agent.`;
       }
       channel.emit({
         type: 'system_note',

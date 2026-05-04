@@ -648,11 +648,12 @@ export function buildDashboardApp(botApi?: Api<RawApi>): Hono {
     const ids = ['main', ...listAgentIds().filter((id) => id !== 'main')];
     const agents = ids.map((id) => {
       try {
-        if (id === 'main') return { id: 'main', name: 'Main', description: 'General ops and triage' };
         const cfg = loadAgentConfig(id);
         return { id, name: cfg.name || id, description: cfg.description || '' };
       } catch {
-        return { id, name: id, description: '' };
+        // No agent.yaml — use a capitalised fallback (e.g. "main" → "Main")
+        const fallbackName = id.charAt(0).toUpperCase() + id.slice(1);
+        return { id, name: fallbackName, description: '' };
       }
     });
     return c.json({ agents });
@@ -1347,8 +1348,17 @@ export function buildDashboardApp(botApi?: Api<RawApi>): Hono {
         usedGeminiVoices.add(geminiVoice);
         isDefault = true;
       }
+      // Resolve display name from agent.yaml (falls back to capitalised id)
+      let displayName: string;
+      try {
+        const cfg = loadAgentConfig(agent);
+        displayName = cfg.name || agent.charAt(0).toUpperCase() + agent.slice(1);
+      } catch {
+        displayName = agent.charAt(0).toUpperCase() + agent.slice(1);
+      }
       return {
         agent,
+        display_name: displayName,
         gemini_voice: geminiVoice,
         voice_id: entry.voice_id || '',
         name: entry.name || '',
@@ -1873,7 +1883,8 @@ export function buildDashboardApp(botApi?: Api<RawApi>): Hono {
       try {
         const config = loadAgentConfig(id);
         // Check if agent process is alive via PID file
-        const pidFile = path.join(STORE_DIR, `agent-${id}.pid`);
+        // Main agent uses 'claudeclaw.pid'; others use 'agent-<id>.pid'
+        const pidFile = path.join(STORE_DIR, id === 'main' ? 'claudeclaw.pid' : `agent-${id}.pid`);
         let running = false;
         if (fs.existsSync(pidFile)) {
           try {
@@ -1897,24 +1908,36 @@ export function buildDashboardApp(botApi?: Api<RawApi>): Hono {
           avatar_etag: avatarEtagForId(id),
         };
       } catch {
-        return { id, name: id, description: '', model: 'unknown', running: false, todayTurns: 0, todayCost: 0, avatar_etag: avatarEtagForId(id) };
+        const fallbackName = id.charAt(0).toUpperCase() + id.slice(1);
+        return { id, name: fallbackName, description: '', model: 'unknown', running: false, todayTurns: 0, todayCost: 0, avatar_etag: avatarEtagForId(id) };
       }
     });
 
-    // Include main bot too
-    const mainPidFile = path.join(STORE_DIR, 'claudeclaw.pid');
-    let mainRunning = false;
-    if (fs.existsSync(mainPidFile)) {
-      try {
-        const pid = parseInt(fs.readFileSync(mainPidFile, 'utf-8').trim(), 10);
-        mainRunning = isProcessAlive(pid);
-      } catch { /* not running */ }
+    // Ensure main is first and not duplicated
+    const hasMain = agentIds.includes('main');
+    let allAgents = agents;
+    if (!hasMain) {
+      // No agents/main/agent.yaml — add a fallback entry
+      const mainPidFile = path.join(STORE_DIR, 'claudeclaw.pid');
+      let mainRunning = false;
+      if (fs.existsSync(mainPidFile)) {
+        try {
+          const pid = parseInt(fs.readFileSync(mainPidFile, 'utf-8').trim(), 10);
+          mainRunning = isProcessAlive(pid);
+        } catch { /* not running */ }
+      }
+      const mainStats = getAgentTokenStats('main');
+      allAgents = [
+        { id: 'main', name: 'Main', description: 'Primary ClaudeClaw bot', model: getMainModelOverride() ?? 'claude-opus-4-6', running: mainRunning, todayTurns: mainStats.todayTurns, todayCost: mainStats.todayCost, avatar_etag: avatarEtagForId('main') },
+        ...agents,
+      ];
+    } else {
+      // main exists in agentIds — move it to the front
+      allAgents = [
+        ...agents.filter((a) => a.id === 'main'),
+        ...agents.filter((a) => a.id !== 'main'),
+      ];
     }
-    const mainStats = getAgentTokenStats('main');
-    const allAgents = [
-      { id: 'main', name: 'Main', description: 'Primary ClaudeClaw bot', model: getMainModelOverride() ?? 'claude-opus-4-6', running: mainRunning, todayTurns: mainStats.todayTurns, todayCost: mainStats.todayCost, avatar_etag: avatarEtagForId('main') },
-      ...agents,
-    ];
 
     return c.json({ agents: allAgents });
   });

@@ -172,6 +172,10 @@ function VoicePane() {
   const roster = useFetch<{ agents: RosterAgent[] }>('/api/warroom/agents', 60_000);
   const meetings = useFetch<{ meetings: VoiceMeeting[] }>('/api/warroom/meetings?limit=10', 60_000);
   const [busy, setBusy] = useState<string | null>(null);
+  const resolveAgentName = (id: string) => {
+    const a = (roster.data?.agents ?? []).find((r) => r.id === id);
+    return a?.name || id.charAt(0).toUpperCase() + id.slice(1);
+  };
 
   async function setPin(agent: string | null, mode: 'direct' | 'auto' = 'direct') {
     setBusy('pin');
@@ -255,7 +259,7 @@ function VoicePane() {
               <span class="text-[var(--color-text-muted)] tabular-nums">{formatRelativeTime(m.started_at)}</span>
               <span class="text-[var(--color-text-faint)]">·</span>
               <span class="text-[var(--color-text-muted)]">{m.mode}</span>
-              {m.pinned_agent && (<><span class="text-[var(--color-text-faint)]">·</span><span class="text-[var(--color-text)]">@{m.pinned_agent}</span></>)}
+              {m.pinned_agent && (<><span class="text-[var(--color-text-faint)]">·</span><span class="text-[var(--color-text)]">@{resolveAgentName(m.pinned_agent)}</span></>)}
               <span class="text-[var(--color-text-faint)]">·</span>
               <span class="text-[var(--color-text-muted)] tabular-nums">{m.entry_count} turns</span>
               {m.duration_s !== null && (<><span class="text-[var(--color-text-faint)]">·</span><span class="text-[var(--color-text-muted)] tabular-nums">{Math.round(m.duration_s / 60)}m</span></>)}

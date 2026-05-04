@@ -101,14 +101,21 @@ export function loadAgentConfig(agentId: string): AgentConfig {
   const botTokenEnv = raw['telegram_bot_token_env'] as string;
   const model = raw['model'] as string | undefined;
 
-  if (!name || !botTokenEnv) {
-    throw new Error(`Agent config ${configPath} must have 'name' and 'telegram_bot_token_env'`);
+  if (!name) {
+    throw new Error(`Agent config ${configPath} must have 'name'`);
   }
 
-  const env = readEnvFile([botTokenEnv]);
-  const botToken = process.env[botTokenEnv] || env[botTokenEnv] || '';
+  // Main agent uses TELEGRAM_BOT_TOKEN directly; specialist agents declare
+  // their own env var via telegram_bot_token_env.
+  const effectiveTokenEnv = botTokenEnv || (agentId === 'main' ? 'TELEGRAM_BOT_TOKEN' : '');
+  if (!effectiveTokenEnv) {
+    throw new Error(`Agent config ${configPath} must have 'telegram_bot_token_env'`);
+  }
+
+  const env = readEnvFile([effectiveTokenEnv]);
+  const botToken = process.env[effectiveTokenEnv] || env[effectiveTokenEnv] || '';
   if (!botToken) {
-    throw new Error(`Bot token not found: set ${botTokenEnv} in .env`);
+    throw new Error(`Bot token not found: set ${effectiveTokenEnv} in .env`);
   }
 
   let obsidian: AgentConfig['obsidian'];
@@ -139,7 +146,7 @@ export function loadAgentConfig(agentId: string): AgentConfig {
   return {
     name,
     description,
-    botTokenEnv,
+    botTokenEnv: effectiveTokenEnv,
     botToken,
     model,
     mcpServers,
@@ -246,11 +253,12 @@ export function refreshWarRoomRoster(): void {
     const ids = ['main', ...listAgentIds().filter((id) => id !== 'main')];
     const roster = ids.map((id) => {
       try {
-        if (id === 'main') return { id: 'main', name: 'Main', description: 'General ops and triage' };
         const cfg = loadAgentConfig(id);
         return { id, name: cfg.name || id, description: cfg.description || '' };
       } catch {
-        return { id, name: id, description: '' };
+        // No agent.yaml — capitalise the id as fallback (e.g. "main" → "Main")
+        const fallbackName = id.charAt(0).toUpperCase() + id.slice(1);
+        return { id, name: fallbackName, description: '' };
       }
     });
     fs.writeFileSync(WARROOM_ROSTER_PATH, JSON.stringify(roster, null, 2));

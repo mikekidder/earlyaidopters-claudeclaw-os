@@ -25,6 +25,7 @@ interface Props {
   agentFilter: string;
   agentColors: Record<string, string>;
   blurOn: boolean;
+  resolveAgentName?: (id: string) => string;
 }
 
 // ── Lobes & agent mapping ──────────────────────────────────────────
@@ -564,7 +565,8 @@ interface SynapseArc {
   lifeSec: number;
 }
 
-export function BrainGraph3D({ entries, agentFilter, agentColors, blurOn }: Props) {
+export function BrainGraph3D({ entries, agentFilter, agentColors, blurOn, resolveAgentName: resolveName }: Props) {
+  const resolveAgentName = resolveName || ((id: string) => id.charAt(0).toUpperCase() + id.slice(1));
   const wrapRef = useRef<HTMLDivElement>(null);
   const sceneStateRef = useRef<{
     scene: THREE.Scene;
@@ -1403,7 +1405,7 @@ export function BrainGraph3D({ entries, agentFilter, agentColors, blurOn }: Prop
                 style={{ backgroundColor: agentColors[hoveredEntry.agent_id] || 'var(--color-text-muted)' }}
               />
               <span class="font-mono text-[10.5px] text-[var(--color-text-muted)]">
-                @{hoveredEntry.agent_id} · {hoveredEntry.action}
+                @{resolveAgentName(hoveredEntry.agent_id)} · {hoveredEntry.action}
               </span>
               <span class="text-[10px] text-[var(--color-text-faint)] ml-auto tabular-nums">
                 {formatRelativeTime(hoveredEntry.created_at)}
@@ -1443,6 +1445,7 @@ export function BrainGraph3D({ entries, agentFilter, agentColors, blurOn }: Prop
             blurOn={blurOn}
             lobeLabel={LOBE_BY_ID[lobeFor(selected.agent_id)]?.label}
             onClose={() => { setSelected(null); setPanelOpen(false); }}
+            resolveAgentName={resolveAgentName}
           />
         ) : (
           <FilterPanel
@@ -1455,6 +1458,7 @@ export function BrainGraph3D({ entries, agentFilter, agentColors, blurOn }: Prop
             totalEntries={entries.length}
             visibleEntries={visibleEntryCount}
             onClose={() => setPanelOpen(false)}
+            resolveAgentName={resolveAgentName}
           />
         )}
       </aside>
@@ -1465,16 +1469,16 @@ export function BrainGraph3D({ entries, agentFilter, agentColors, blurOn }: Prop
 // Detail + Filter panels: identical to the 2D version visually.
 
 function DetailPanel({
-  entry, color, blurOn, lobeLabel, onClose,
+  entry, color, blurOn, lobeLabel, onClose, resolveAgentName,
 }: {
-  entry: HiveEntry; color: string; blurOn: boolean; lobeLabel?: string; onClose: () => void;
+  entry: HiveEntry; color: string; blurOn: boolean; lobeLabel?: string; onClose: () => void; resolveAgentName: (id: string) => string;
 }) {
   const [revealed, setRevealed] = useState(false);
   return (
     <>
       <header class="flex items-center px-4 py-3 border-b border-[var(--color-border)] gap-2">
         <span class="inline-block w-2 h-2 rounded-full" style={{ backgroundColor: color }} />
-        <span class="font-mono text-[12px] text-[var(--color-text)]">@{entry.agent_id}</span>
+        <span class="font-mono text-[12px] text-[var(--color-text)]">@{resolveAgentName(entry.agent_id)}</span>
         {lobeLabel && (
           <span class="text-[10px] uppercase tracking-wider text-[var(--color-text-faint)] ml-1">{lobeLabel}</span>
         )}
@@ -1518,7 +1522,7 @@ function Field({ label, children }: { label: string; children: any }) {
 }
 
 function FilterPanel({
-  filters, update, toggleHidden, visibleAgents, agentColors, onReset, totalEntries, visibleEntries, onClose,
+  filters, update, toggleHidden, visibleAgents, agentColors, onReset, totalEntries, visibleEntries, onClose, resolveAgentName,
 }: {
   filters: BrainFilters;
   update: <K extends keyof BrainFilters>(key: K, value: BrainFilters[K]) => void;
@@ -1529,6 +1533,7 @@ function FilterPanel({
   totalEntries: number;
   visibleEntries: number;
   onClose: () => void;
+  resolveAgentName: (id: string) => string;
 }) {
   const [openSection, setOpenSection] = useState({ agents: true, lobes: false, display: false });
   return (
@@ -1570,7 +1575,7 @@ function FilterPanel({
                   class="w-full flex items-center gap-2 px-2 py-1.5 rounded hover:bg-[var(--color-elevated)] transition-colors text-left"
                 >
                   <span class="inline-block w-2 h-2 rounded-full shrink-0" style={{ backgroundColor: color, boxShadow: on ? `0 0 6px ${color}` : 'none' }} />
-                  <span class={'font-mono text-[11.5px] ' + (on ? 'text-[var(--color-text)]' : 'text-[var(--color-text-faint)]')}>@{id}</span>
+                  <span class={'font-mono text-[11.5px] ' + (on ? 'text-[var(--color-text)]' : 'text-[var(--color-text-faint)]')}>@{resolveAgentName(id)}</span>
                   {lobe && <span class="text-[10px]" style={{ color: on ? `#${lobe.color.getHexString()}` : 'var(--color-text-faint)', opacity: on ? 0.75 : 0.4 }}>{lobe.label.toLowerCase()}</span>}
                   <span class="ml-auto text-[10.5px] tabular-nums text-[var(--color-text-faint)]">{count}</span>
                   <span class={'brain-switch ' + (on ? 'is-on' : '')} />

@@ -19,6 +19,8 @@ interface Props {
   /** Per-agent dot color (defaults supplied by the parent). */
   agentColors: Record<string, string>;
   blurOn: boolean;
+  /** Resolve an agent id to its display name. */
+  resolveAgentName?: (id: string) => string;
 }
 
 // ── Brain shape ─────────────────────────────────────────────────────
@@ -191,7 +193,8 @@ const DEFAULT_FILTERS: BrainFilters = {
 
 // ── Component ───────────────────────────────────────────────────────
 
-export function BrainGraph({ entries, agentFilter, agentColors, blurOn }: Props) {
+export function BrainGraph({ entries, agentFilter, agentColors, blurOn, resolveAgentName: resolveName }: Props) {
+  const resolveAgentName = resolveName || ((id: string) => id.charAt(0).toUpperCase() + id.slice(1));
   const cerebrumRef = useRef<SVGPathElement>(null);
   const wrapRef = useRef<HTMLDivElement>(null);
 
@@ -507,7 +510,7 @@ export function BrainGraph({ entries, agentFilter, agentColors, blurOn }: Props)
                 style={{ backgroundColor: agentColors[hoveredEntry.agent_id] || 'var(--color-text-muted)' }}
               />
               <span class="font-mono text-[10.5px] text-[var(--color-text-muted)]">
-                @{hoveredEntry.agent_id} · {hoveredEntry.action}
+                @{resolveAgentName(hoveredEntry.agent_id)} · {hoveredEntry.action}
               </span>
               <span class="text-[10px] text-[var(--color-text-faint)] ml-auto tabular-nums">
                 {formatRelativeTime(hoveredEntry.created_at)}
@@ -552,6 +555,7 @@ export function BrainGraph({ entries, agentFilter, agentColors, blurOn }: Props)
             blurOn={blurOn}
             lobeLabel={LOBE_BY_ID[AGENT_LOBE[selected.agent_id] || 'frontal']?.label}
             onClose={() => { setSelected(null); setPanelOpen(false); }}
+            resolveAgentName={resolveAgentName}
           />
         ) : (
           <FilterPanel
@@ -565,6 +569,7 @@ export function BrainGraph({ entries, agentFilter, agentColors, blurOn }: Props)
             totalEntries={entries.length}
             visibleEntries={visibleEntryCount}
             onClose={() => setPanelOpen(false)}
+            resolveAgentName={resolveAgentName}
           />
         )}
       </aside>
@@ -575,20 +580,21 @@ export function BrainGraph({ entries, agentFilter, agentColors, blurOn }: Props)
 // ── Detail panel ─────────────────────────────────────────────────────
 
 function DetailPanel({
-  entry, color, blurOn, lobeLabel, onClose,
+  entry, color, blurOn, lobeLabel, onClose, resolveAgentName,
 }: {
   entry: HiveEntry;
   color: string;
   blurOn: boolean;
   lobeLabel?: string;
   onClose: () => void;
+  resolveAgentName: (id: string) => string;
 }) {
   const [revealed, setRevealed] = useState(false);
   return (
     <>
       <header class="flex items-center px-4 py-3 border-b border-[var(--color-border)] gap-2">
         <span class="inline-block w-2 h-2 rounded-full" style={{ backgroundColor: color }} />
-        <span class="font-mono text-[12px] text-[var(--color-text)]">@{entry.agent_id}</span>
+        <span class="font-mono text-[12px] text-[var(--color-text)]">@{resolveAgentName(entry.agent_id)}</span>
         {lobeLabel && (
           <span class="text-[10px] uppercase tracking-wider text-[var(--color-text-faint)] ml-1">{lobeLabel}</span>
         )}
@@ -642,7 +648,7 @@ function Field({ label, children }: { label: string; children: any }) {
 // ── Filter panel ─────────────────────────────────────────────────────
 
 function FilterPanel({
-  filters, update, toggleHidden, visibleAgents, agentColors, onAnimate, onReset, totalEntries, visibleEntries, onClose,
+  filters, update, toggleHidden, visibleAgents, agentColors, onAnimate, onReset, totalEntries, visibleEntries, onClose, resolveAgentName,
 }: {
   filters: BrainFilters;
   update: <K extends keyof BrainFilters>(key: K, value: BrainFilters[K]) => void;
@@ -654,6 +660,7 @@ function FilterPanel({
   totalEntries: number;
   visibleEntries: number;
   onClose: () => void;
+  resolveAgentName: (id: string) => string;
 }) {
   const [openSection, setOpenSection] = useState({
     agents: true,
@@ -721,7 +728,7 @@ function FilterPanel({
                     style={{ backgroundColor: color, boxShadow: on ? `0 0 6px ${color}` : 'none' }}
                   />
                   <span class={'font-mono text-[11.5px] ' + (on ? 'text-[var(--color-text)]' : 'text-[var(--color-text-faint)]')}>
-                    @{id}
+                    @{resolveAgentName(id)}
                   </span>
                   {lobe && (
                     <span class="text-[10px]" style={{ color: on ? lobe.color : 'var(--color-text-faint)', opacity: on ? 0.75 : 0.4 }}>

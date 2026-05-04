@@ -3133,17 +3133,14 @@ async function runWarmupIntro(rosterForIntro) {
 
 // ── Load history then connect SSE ──
 // Helper: getRoster alias used by the intro before roster is populated.
-// Falls back to the default 5 agents so the animation still runs on a
-// cold meeting where /history has not resolved yet.
+// Falls back to capitalised-id defaults so the animation still runs on a
+// cold meeting where /history has not resolved yet. Once the API responds,
+// roster is populated with configured names and this fallback is unused.
 function getRoster() {
   if (roster && roster.length) return roster;
-  return [
-    { id: 'main', name: 'Main' },
-    { id: 'research', name: 'Research' },
-    { id: 'comms', name: 'Comms' },
-    { id: 'content', name: 'Content' },
-    { id: 'ops', name: 'Ops' },
-  ];
+  return ['main', 'research', 'comms', 'content', 'ops'].map(function(id) {
+    return { id: id, name: id.charAt(0).toUpperCase() + id.slice(1) };
+  });
 }
 
 async function loadHistoryThenConnect() {

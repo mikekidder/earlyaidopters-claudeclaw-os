@@ -52,13 +52,18 @@ export function HiveMind() {
   const [filter, setFilter] = useState<string>('all');
   const [view, setView] = useState<ViewMode>(loadView());
   const [revealed, setRevealed] = useState<Set<number>>(new Set());
-  const agentList = useFetch<{ agents: { id: string }[] }>('/api/agents');
+  const agentList = useFetch<{ agents: { id: string; name: string }[] }>('/api/agents');
   const path = filter === 'all'
     ? '/api/hive-mind?limit=200'
     : `/api/hive-mind?agent=${encodeURIComponent(filter)}&limit=200`;
   const { data, loading, error } = useFetch<{ entries: HiveEntry[] }>(path, 30_000);
   const entries = data?.entries ?? [];
   const allAgents = agentList.data?.agents?.map((a) => a.id) ?? KNOWN_AGENTS;
+  const agentNameMap = new Map<string, string>(
+    (agentList.data?.agents ?? []).map((a) => [a.id, a.name]),
+  );
+  const resolveAgentName = (id: string) =>
+    agentNameMap.get(id) || id.charAt(0).toUpperCase() + id.slice(1);
   const blurOn = privacyBlur('hive').value;
 
   // Resolve to 2D if user requested 3D but the browser can't do WebGL.
@@ -94,7 +99,7 @@ export function HiveMind() {
           <>
             <Tab label="All" active={filter === 'all'} onClick={() => setFilter('all')} />
             {allAgents.map((id) => (
-              <Tab key={id} label={id} active={filter === id} onClick={() => setFilter(id)} />
+              <Tab key={id} label={resolveAgentName(id)} active={filter === id} onClick={() => setFilter(id)} />
             ))}
           </>
         }
@@ -120,6 +125,7 @@ export function HiveMind() {
           agentFilter={filter}
           agentColors={AGENT_HUE}
           blurOn={blurOn}
+          resolveAgentName={resolveAgentName}
         />
       )}
 
@@ -158,7 +164,7 @@ export function HiveMind() {
                   <td class="px-3 py-2">
                     <span class="inline-flex items-center gap-1.5" style={{ color: AGENT_HUE[e.agent_id] || 'var(--color-text-muted)' }}>
                       <span class="inline-block w-1.5 h-1.5 rounded-full" style={{ backgroundColor: 'currentColor' }} />
-                      {e.agent_id}
+                      {resolveAgentName(e.agent_id)}
                     </span>
                   </td>
                   <td class="px-3 py-2 font-mono text-[11px] text-[var(--color-text-muted)]">{e.action}</td>

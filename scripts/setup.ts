@@ -541,7 +541,9 @@ async function main() {
   const trimmedConfig = configInput.trim();
   if (trimmedConfig && trimmedConfig !== defaultConfigDir) {
     // Guard against accidental single-letter paths (e.g. typing "y" to confirm)
-    if (trimmedConfig.length < 3 || (!trimmedConfig.startsWith('/') && !trimmedConfig.startsWith('~') && !trimmedConfig.startsWith('.'))) {
+    // Accept Unix paths (/..., ~/..., ./...) and Windows drive paths (C:\...)
+    const looksLikePath = trimmedConfig.startsWith('/') || trimmedConfig.startsWith('~') || trimmedConfig.startsWith('.') || /^[A-Za-z]:[\\/]/.test(trimmedConfig);
+    if (trimmedConfig.length < 3 || !looksLikePath) {
       warn(`"${trimmedConfig}" doesn't look like a directory path. Using default: ${defaultConfigDir}`);
     } else {
       claudeclawConfigDir = expandHome(trimmedConfig);
@@ -560,9 +562,71 @@ async function main() {
     ok(`Created ${claudeclawConfigDir}`);
   }
 
-  // Ensure CLAUDE.md exists in the config dir (copy from example if needed)
-  const claudeMdDest = path.join(claudeclawConfigDir, 'CLAUDE.md');
-  if (!fs.existsSync(claudeMdDest)) {
+  // ── 6b. Main agent identity (agent.yaml) ───────────────────────────────
+  const mainAgentDir = path.join(claudeclawConfigDir, 'agents', 'main');
+  const mainYamlDest = path.join(mainAgentDir, 'agent.yaml');
+  if (fs.existsSync(mainYamlDest)) {
+    ok(`agent.yaml exists at ${mainYamlDest}`);
+  } else {
+    fs.mkdirSync(mainAgentDir, { recursive: true });
+    console.log();
+    info('Your main bot can have a display name shown on the dashboard and in chats.');
+    const mainName = await ask('Name for your main agent (Enter for "Main")') || 'Main';
+    const mainDesc = await ask('Short description (Enter to skip)') || '';
+
+    const yamlLines = [
+      '# Main agent configuration',
+      `name: ${mainName}`,
+    ];
+    if (mainDesc) {
+      yamlLines.push(`description: ${mainDesc}`);
+    }
+    yamlLines.push('');
+    yamlLines.push('# The main agent uses TELEGRAM_BOT_TOKEN from .env (no override needed).');
+    yamlLines.push('# telegram_bot_token_env: TELEGRAM_BOT_TOKEN');
+    yamlLines.push('');
+    yamlLines.push('# Default model. Options: claude-opus-4-6, claude-sonnet-4-6, claude-haiku-4-5');
+    yamlLines.push('# Users can override per-chat with /model in Telegram.');
+    yamlLines.push('model: claude-sonnet-4-6');
+    yamlLines.push('');
+    yamlLines.push('# Obsidian integration (optional).');
+    yamlLines.push('# obsidian:');
+    yamlLines.push('#   vault: /path/to/your/obsidian/vault');
+    yamlLines.push('#   folders:');
+    yamlLines.push('#     - FolderA/');
+    yamlLines.push('');
+
+    fs.writeFileSync(mainYamlDest, yamlLines.join('\n'), 'utf-8');
+    ok(`Created agent.yaml for main agent → ${mainYamlDest}`);
+    if (mainName !== 'Main') {
+      info(`Dashboard and chats will show "${mainName}" instead of "Main".`);
+    }
+  }
+
+  // ── 6c. CLAUDE.md personalization ──────────────────────────────────────
+  section('Personalize your assistant (CLAUDE.md)');
+
+  info('CLAUDE.md is the personality and context file loaded into every session.');
+  info('It defines who your assistant is, what you do, and how it communicates.');
+  console.log();
+
+  // CLAUDE.md lives in the agent subfolder (same pattern as sub-agents).
+  // For backward compatibility, check the root-level location too.
+  const agentClaudeMdDest = path.join(mainAgentDir, 'CLAUDE.md');
+  const legacyClaudeMdDest = path.join(claudeclawConfigDir, 'CLAUDE.md');
+  let claudeMdDest: string;
+
+  if (fs.existsSync(agentClaudeMdDest)) {
+    claudeMdDest = agentClaudeMdDest;
+    ok(`CLAUDE.md exists at ${claudeMdDest}`);
+  } else if (fs.existsSync(legacyClaudeMdDest)) {
+    // Existing install with root-level CLAUDE.md — leave it in place.
+    // index.ts resolveAgentClaudeMd checks agent subfolder first, then falls back.
+    claudeMdDest = legacyClaudeMdDest;
+    ok(`CLAUDE.md exists at ${claudeMdDest} (legacy location)`);
+  } else {
+    // Fresh install — create in the agent subfolder
+    claudeMdDest = agentClaudeMdDest;
     const exampleSrc = path.join(PROJECT_ROOT, 'CLAUDE.md.example');
     if (fs.existsSync(exampleSrc)) {
       fs.copyFileSync(exampleSrc, claudeMdDest);
@@ -570,32 +634,48 @@ async function main() {
     } else {
       warn(`No CLAUDE.md.example found — create ${claudeMdDest} manually`);
     }
-  } else {
-    ok(`CLAUDE.md exists at ${claudeMdDest}`);
   }
 
-  // ── 6b. CLAUDE.md personalization ────────────────────────────────────────
-  section('Personalize your assistant (CLAUDE.md)');
+  // Read the agent name from the yaml we just created (or an existing one)
+  let assistantName = 'Main';
+  try {
+    const yamlText = fs.readFileSync(path.join(mainAgentDir, 'agent.yaml'), 'utf-8');
+    const nameMatch = yamlText.match(/^name:\s*(.+)$/m);
+    if (nameMatch) assistantName = nameMatch[1].trim();
+  } catch { /* use default */ }
 
-  info('CLAUDE.md is the personality and context file loaded into every session.');
-  info('It defines who your assistant is, what you do, and how it communicates.');
+  const ownerName = await ask('Your name (so the bot knows who it\'s talking to)') || '';
+
+  // Replace placeholders in CLAUDE.md if we have values
+  if (fs.existsSync(claudeMdDest)) {
+    let claudeContent = fs.readFileSync(claudeMdDest, 'utf-8');
+    let replaced = false;
+    if (assistantName && assistantName !== 'Main' && claudeContent.includes('[YOUR ASSISTANT NAME]')) {
+      claudeContent = claudeContent.replace(/\[YOUR ASSISTANT NAME\]/g, assistantName);
+      replaced = true;
+    }
+    if (ownerName && claudeContent.includes('[YOUR NAME]')) {
+      claudeContent = claudeContent.replace(/\[YOUR NAME\]/g, ownerName);
+      replaced = true;
+    }
+    if (replaced) {
+      fs.writeFileSync(claudeMdDest, claudeContent, 'utf-8');
+      ok('Updated CLAUDE.md with your names');
+    }
+  }
+
   console.log();
-  info('At minimum, replace the [BRACKETED] placeholders:');
-  bullet('[YOUR ASSISTANT NAME]  — what you want to call the bot');
-  bullet('[YOUR NAME]            — your name (so it knows who it\'s talking to)');
-  bullet('[YOUR_OBSIDIAN_VAULT]  — path to your Obsidian vault, if you use one');
-  console.log();
-  info('The more context you add, the better it performs without explaining things');
-  info('in every message. Think of it as a system prompt that persists everywhere.');
+  info('You can further personalize CLAUDE.md at any time. Useful things to add:');
+  bullet('Your projects and work context');
+  bullet('Communication preferences');
+  bullet('Obsidian vault path (if you use one)');
   console.log();
   console.log(`  ${c.bold}Your CLAUDE.md is here:${c.reset}`);
   console.log();
   console.log(`  ${c.cyan}${claudeMdDest}${c.reset}`);
   console.log();
-  info('You can edit it in any text editor, or just start the bot and ask');
-  info('Claude to update your CLAUDE.md for you. It has full access to the file.');
-  console.log();
-  info('The bot works fine with the defaults. Personalize it whenever you\'re ready.');
+  info('Edit it in any text editor, or just ask the bot via Telegram to');
+  info('update it for you. It has full access to the file.');
 
   // ── 7. Skills to install ─────────────────────────────────────────────────
   section('Skills you might want');

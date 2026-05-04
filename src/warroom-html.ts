@@ -1362,7 +1362,7 @@ async function togglePin(agentId) {
     // 1. Optimistic UI update
     pinnedAgent = targetAgent;
     _renderPin();
-    var statusLabel = targetAgent ? (AGENT_LABELS[targetAgent] || targetAgent) : 'Main';
+    var statusLabel = targetAgent ? (AGENT_LABELS[targetAgent] || targetAgent) : (AGENT_LABELS['main'] || 'Main');
     addTranscriptEntry('system', 'Switching to ' + statusLabel + '...');
     document.getElementById('statusText').textContent = 'switching to ' + statusLabel + '...';
 
@@ -1538,6 +1538,9 @@ function loadAgentCards() {
         var role = AGENT_ROLES[agent.id] || agent.description || 'Specialist';
         var displayName = agent.name || agent.id;
         AGENT_LABELS[agent.id] = displayName;
+        // Update stage nameplate if the intro animation is still visible
+        var stageEl = document.querySelector('.stage-avatar[data-agent="' + agent.id + '"] .stage-nameplate');
+        if (stageEl) stageEl.textContent = displayName.toUpperCase();
         var safeName = escapeHtmlClient(displayName);
         var safeRole = escapeHtmlClient(role);
         var safeAgentIdAttr = escapeHtmlClient(agent.id);
@@ -1712,7 +1715,7 @@ window.addEventListener('beforeunload', __warRoomCleanup);
 async function toggleMeeting() {
   var btn = document.getElementById('meetingBtn');
   if (!meetingActive) {
-    var agentLabel = pinnedAgent ? (AGENT_LABELS[pinnedAgent] || pinnedAgent) : 'Main';
+    var agentLabel = pinnedAgent ? (AGENT_LABELS[pinnedAgent] || pinnedAgent) : (AGENT_LABELS['main'] || 'Main');
     btn.textContent = 'Setting up ' + agentLabel + '...';
     btn.disabled = true;
     btn.className = 'btn';
