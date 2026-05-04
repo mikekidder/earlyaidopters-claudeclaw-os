@@ -200,13 +200,13 @@ async function main(): Promise<void> {
       // Detect uv for better error messages (used in both branches below)
       const { spawnSync } = await import('child_process');
       let uvAvailable = false;
-      try { uvAvailable = spawnSync('uv', ['--version'], { stdio: 'pipe' }).status === 0; } catch { /* */ }
+      try { uvAvailable = spawnSync('uv', ['--version'], { stdio: 'pipe', windowsHide: true }).status === 0; } catch { /* */ }
       if (uvAvailable) logger.info('uv detected — will use uv commands in War Room instructions');
 
       if (fs.existsSync(venvPython) && fs.existsSync(serverScript)) {
         // Pre-flight: verify Python dependencies are actually installed
 
-        const depCheck = spawnSync(venvPython, ['-c', 'import pipecat'], { stdio: 'pipe', timeout: 10000 });
+        const depCheck = spawnSync(venvPython, ['-c', 'import pipecat'], { stdio: 'pipe', timeout: 10000, windowsHide: true });
         if (depCheck.status !== 0) {
           const msg = uvAvailable
             ? 'War Room Python dependencies not installed. Run:\n\n'
@@ -252,6 +252,7 @@ async function main(): Promise<void> {
             cwd: PROJECT_ROOT,
             env: { ...process.env, WARROOM_PORT: String(WARROOM_PORT) },
             stdio: ['ignore', 'pipe', 'pipe'],
+            windowsHide: true,
           });
           currentProc = proc;
 

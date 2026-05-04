@@ -1684,6 +1684,7 @@ export function buildDashboardApp(botApi?: Api<RawApi>): Hono {
       cwd: PROJECT_ROOT,
       env: process.env,
       stdio: ['ignore', 'pipe', 'pipe'],
+      windowsHide: true,
     });
 
     let stdout = '';

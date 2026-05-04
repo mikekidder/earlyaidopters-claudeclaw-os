@@ -23,7 +23,7 @@ export function killProcess(pid: number, force = false): boolean {
   try {
     if (IS_WINDOWS) {
       const flag = force ? '/F' : '';
-      execSync(`taskkill ${flag} /PID ${pid}`, { stdio: 'ignore' });
+      execSync(`taskkill ${flag} /PID ${pid}`, { stdio: 'ignore', windowsHide: true });
       return true;
     }
     process.kill(pid, force ? 'SIGKILL' : 'SIGTERM');
@@ -44,6 +44,7 @@ export function isProcessAlive(pid: number): boolean {
       const out = execSync(`tasklist /FI "PID eq ${pid}" /NH /FO CSV`, {
         stdio: 'pipe',
         encoding: 'utf-8',
+        windowsHide: true,
       });
       // tasklist prints "INFO: No tasks..." on stderr when missing, and an empty
       // result on stdout. A live process produces a CSV row containing the PID.
@@ -67,7 +68,7 @@ export async function findProcessesByPattern(pattern: string): Promise<number[]>
       if (IS_WINDOWS) {
         // wmic is being deprecated but still ships with Windows 10/11. Fall
         // back to PowerShell if wmic fails.
-        const p = spawn('wmic', ['process', 'where', `CommandLine like '%${pattern.replace(/'/g, "''")}%'`, 'get', 'ProcessId', '/value'], { shell: true });
+        const p = spawn('wmic', ['process', 'where', `CommandLine like '%${pattern.replace(/'/g, "''")}%'`, 'get', 'ProcessId', '/value'], { shell: true, windowsHide: true });
         let out = '';
         p.stdout.on('data', (chunk) => { out += chunk.toString(); });
         p.on('close', (code) => {
@@ -76,7 +77,7 @@ export async function findProcessesByPattern(pattern: string): Promise<number[]>
             try {
               const ps = execSync(
                 `powershell -NoProfile -Command "Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -like '*${pattern.replace(/'/g, "''")}*' } | Select-Object -ExpandProperty ProcessId"`,
-                { encoding: 'utf-8', stdio: 'pipe' },
+                { encoding: 'utf-8', stdio: 'pipe', windowsHide: true },
               );
               resolve(
                 ps.split(/\r?\n/)

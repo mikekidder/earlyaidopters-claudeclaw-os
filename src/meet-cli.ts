@@ -66,7 +66,7 @@ const WARROOM_VENV_PY = getVenvPython(path.join(PROJECT_ROOT, 'warroom', '.venv'
 let _uvAvailable: boolean | null = null;
 function hasUv(): boolean {
   if (_uvAvailable === null) {
-    try { _uvAvailable = spawnSync('uv', ['--version'], { stdio: 'pipe' }).status === 0; } catch { _uvAvailable = false; }
+    try { _uvAvailable = spawnSync('uv', ['--version'], { stdio: 'pipe', windowsHide: true }).status === 0; } catch { _uvAvailable = false; }
   }
   return _uvAvailable;
 }
@@ -217,6 +217,7 @@ async function runPikaScript(args: string[], timeoutSec = 90): Promise<{
       cwd: PROJECT_ROOT,
       env: env as NodeJS.ProcessEnv,
       stdio: ['ignore', 'pipe', 'pipe'],
+      windowsHide: true,
     });
 
     let stdout = '';
@@ -312,6 +313,7 @@ async function synthesizeBrief(params: {
         cwd: PROJECT_ROOT,
         env: process.env,
         stdio: ['ignore', 'pipe', 'pipe'],
+        windowsHide: true,
       });
       let stdout = '';
       let stderr = '';
@@ -665,6 +667,7 @@ async function cmdJoinDaily(): Promise<void> {
     env: subEnv as NodeJS.ProcessEnv,
     detached: true,
     stdio: ['ignore', 'pipe', logFd ?? 'ignore'],
+    windowsHide: true,
   });
 
   process.stderr.write(`[meet-cli] Spawned daily_agent pid=${child.pid}, log=${logPath}\n`);

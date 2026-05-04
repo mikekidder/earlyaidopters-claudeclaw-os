@@ -161,13 +161,13 @@ export function executeEmergencyKill(): void {
       // Enumerate scheduled tasks matching com.claudeclaw.* and end each one.
       // schtasks doesn't accept wildcards in /End, so we parse /Query output.
       try {
-        const out = execSync('schtasks /Query /FO CSV /NH', { encoding: 'utf-8', timeout: 3000 });
+        const out = execSync('schtasks /Query /FO CSV /NH', { encoding: 'utf-8', timeout: 3000, windowsHide: true });
         for (const line of out.split(/\r?\n/)) {
           // CSV: "TaskName","Next Run Time","Status"
           const match = line.match(/^"(\\?com\.claudeclaw\.[^"]+)"/);
           if (match) {
             const name = match[1];
-            try { execSync(`schtasks /End /TN "${name}"`, { stdio: 'ignore', timeout: 2000 }); } catch { /* ok */ }
+            try { execSync(`schtasks /End /TN "${name}"`, { stdio: 'ignore', timeout: 2000, windowsHide: true }); } catch { /* ok */ }
           }
         }
       } catch { /* schtasks failed, still exit */ }
