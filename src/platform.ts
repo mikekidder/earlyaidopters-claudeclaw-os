@@ -66,38 +66,22 @@ export async function findProcessesByPattern(pattern: string): Promise<number[]>
   return new Promise((resolve) => {
     try {
       if (IS_WINDOWS) {
-        // wmic is being deprecated but still ships with Windows 10/11. Fall
-        // back to PowerShell if wmic fails.
-        const p = spawn('wmic', ['process', 'where', `CommandLine like '%${pattern.replace(/'/g, "''")}%'`, 'get', 'ProcessId', '/value'], { shell: true, windowsHide: true });
-        let out = '';
-        p.stdout.on('data', (chunk) => { out += chunk.toString(); });
-        p.on('close', (code) => {
-          if (code !== 0) {
-            // Try PowerShell fallback
-            try {
-              const ps = execSync(
-                `powershell -NoProfile -Command "Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -like '*${pattern.replace(/'/g, "''")}*' } | Select-Object -ExpandProperty ProcessId"`,
-                { encoding: 'utf-8', stdio: 'pipe', windowsHide: true },
-              );
-              resolve(
-                ps.split(/\r?\n/)
-                  .map((s) => parseInt(s.trim(), 10))
-                  .filter((n) => Number.isFinite(n) && n > 0),
-              );
-            } catch {
-              resolve([]);
-            }
-            return;
-          }
-          const pids = out
-            .split(/\r?\n/)
-            .map((line) => line.trim())
-            .filter((line) => line.startsWith('ProcessId='))
-            .map((line) => parseInt(line.slice('ProcessId='.length), 10))
-            .filter((n) => Number.isFinite(n) && n > 0 && n !== process.pid);
-          resolve(pids);
-        });
-        p.on('error', () => resolve([]));
+        // wmic was removed from Windows 11 22H2+ and every failed spawn cost
+        // ~100ms before the fallback. PowerShell's Get-CimInstance ships in
+        // every supported Windows version, so use it directly.
+        try {
+          const ps = execSync(
+            `powershell -NoProfile -Command "Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -like '*${pattern.replace(/'/g, "''")}*' } | Select-Object -ExpandProperty ProcessId"`,
+            { encoding: 'utf-8', stdio: 'pipe', windowsHide: true },
+          );
+          resolve(
+            ps.split(/\r?\n/)
+              .map((s) => parseInt(s.trim(), 10))
+              .filter((n) => Number.isFinite(n) && n > 0 && n !== process.pid),
+          );
+        } catch {
+          resolve([]);
+        }
       } else {
         const p = spawn('pgrep', ['-f', pattern]);
         let out = '';
@@ -125,6 +109,16 @@ export function getVenvPython(venvDir: string): string {
   return IS_WINDOWS
     ? path.join(venvDir, 'Scripts', 'python.exe')
     : path.join(venvDir, 'bin', 'python');
+}
+
+/**
+ * Resolve the pip executable inside a local .venv directory.
+ * POSIX: <venvDir>/bin/pip. Windows: <venvDir>\Scripts\pip.exe.
+ */
+export function getVenvPip(venvDir: string): string {
+  return IS_WINDOWS
+    ? path.join(venvDir, 'Scripts', 'pip.exe')
+    : path.join(venvDir, 'bin', 'pip');
 }
 
 /**

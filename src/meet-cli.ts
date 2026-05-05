@@ -274,7 +274,7 @@ async function synthesizeBrief(params: {
   contextHint?: string;
   briefId: string;
 }): Promise<{ path: string; fallback: boolean; content: string }> {
-  const briefPath = `/tmp/meeting_brief_${params.briefId}.txt`;
+  const briefPath = path.join(os.tmpdir(), `meeting_brief_${params.briefId}.txt`);
 
   if (!fs.existsSync(VOICE_BRIDGE_JS)) {
     const fallback = buildMinimalBrief(params);
@@ -873,7 +873,7 @@ Commands:
               [--room-name <slug>] [--ttl-sec <seconds>]
               (Requires DAILY_API_KEY and GOOGLE_API_KEY in .env)
   brief       Pre-flight research pipeline. Writes a system prompt file
-              to /tmp/meeting_brief_*.txt using the agent's full stack.
+              to <tmpdir>/meeting_brief_*.txt using the agent's full stack.
               --agent <id> --meet-url <url> [--context <hint>]
   leave       --session-id <id>
   list        [--active]

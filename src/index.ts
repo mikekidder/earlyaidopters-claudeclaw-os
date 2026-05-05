@@ -214,8 +214,12 @@ async function main(): Promise<void> {
               + 'Then restart the bot.'
             : IS_WINDOWS
               ? 'War Room Python dependencies not installed. Run:\n\n'
-                + 'warroom\\.venv\\Scripts\\activate\n'
-                + 'pip install -r warroom\\requirements.txt\n\n'
+                + 'In PowerShell:\n'
+                + '  .\\warroom\\.venv\\Scripts\\Activate.ps1\n'
+                + '  pip install -r warroom\\requirements.txt\n\n'
+                + 'Or in Command Prompt:\n'
+                + '  warroom\\.venv\\Scripts\\activate.bat\n'
+                + '  pip install -r warroom\\requirements.txt\n\n'
                 + 'Then restart the bot.'
               : 'War Room Python dependencies not installed. Run:\n\n'
                 + 'source warroom/.venv/bin/activate\n'
@@ -323,7 +327,14 @@ async function main(): Promise<void> {
           ? uvAvailable
             ? 'Python venv not found. Run:\n\nuv venv warroom/.venv\nuv pip install --python warroom/.venv -r warroom/requirements.txt'
             : IS_WINDOWS
-              ? 'Python venv not found. Run:\n\npython -m venv warroom\\.venv\nwarroom\\.venv\\Scripts\\activate\npip install -r warroom\\requirements.txt'
+              ? 'Python venv not found. Run:\n\n'
+                + 'python -m venv warroom\\.venv\n\n'
+                + 'In PowerShell:\n'
+                + '  .\\warroom\\.venv\\Scripts\\Activate.ps1\n'
+                + '  pip install -r warroom\\requirements.txt\n\n'
+                + 'Or in Command Prompt:\n'
+                + '  warroom\\.venv\\Scripts\\activate.bat\n'
+                + '  pip install -r warroom\\requirements.txt'
               : 'Python venv not found. Run:\n\npython3 -m venv warroom/.venv\nsource warroom/.venv/bin/activate\npip install -r warroom/requirements.txt'
           : 'warroom/server.py not found. Make sure the warroom/ directory exists.';
         logger.warn('War Room enabled but cannot start: %s', hint);

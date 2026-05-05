@@ -7,6 +7,8 @@ import path from 'path';
 import readline from 'readline';
 import { fileURLToPath } from 'url';
 
+import { getVenvPython, getVenvPip } from '../src/platform.js';
+
 // ── ANSI helpers ────────────────────────────────────────────────────────────
 const c = {
   reset: '\x1b[0m',
@@ -291,7 +293,7 @@ async function main() {
     if (proceed) {
       console.log();
       info('Running: npm install -g @anthropic-ai/claude-code');
-      const result = spawnSync('npm', ['install', '-g', '@anthropic-ai/claude-code'], { stdio: 'inherit', shell: true });
+      const result = spawnSync('npm', ['install', '-g', '@anthropic-ai/claude-code'], { stdio: 'inherit', shell: PLATFORM === 'win32' });
       if (result.status === 0) {
         ok('Claude Code installed. Run claude login, then npm run setup again.');
       } else {
@@ -341,7 +343,7 @@ async function main() {
     ok('Build output found (dist/)');
   } else {
     warn('Not built yet — building now...');
-    const build = spawnSync('npm', ['run', 'build'], { cwd: PROJECT_ROOT, stdio: 'inherit', shell: true });
+    const build = spawnSync('npm', ['run', 'build'], { cwd: PROJECT_ROOT, stdio: 'inherit', shell: PLATFORM === 'win32' });
     if (build.status === 0) {
       ok('Build complete');
     } else {
@@ -454,9 +456,8 @@ async function main() {
       ok(`${pyResult.version} (${pyResult.bin})`);
 
       // Check if venv already exists and deps are installed
-      // Windows: .venv\Scripts\python.exe — POSIX: .venv/bin/python
-      const venvBinDir = PLATFORM === 'win32' ? 'Scripts' : 'bin';
-      const venvPython = path.join(PROJECT_ROOT, 'warroom', '.venv', venvBinDir, PLATFORM === 'win32' ? 'python.exe' : 'python');
+      const venvDir = path.join(PROJECT_ROOT, 'warroom', '.venv');
+      const venvPython = getVenvPython(venvDir);
       const depsInstalled = (): boolean => {
         if (!fs.existsSync(venvPython)) return false;
         const check = spawnSync(venvPython, ['-c', 'import pipecat'], { stdio: 'pipe', timeout: 10000 });
@@ -473,14 +474,13 @@ async function main() {
           let venvOk = !needsVenv;
           if (needsVenv) {
             // spawnSync blocks the event loop, so use a static message instead of a spinner
-            const venvPath = path.join(PROJECT_ROOT, 'warroom', '.venv');
             let venvResult: ReturnType<typeof spawnSync>;
             if (hasUv) {
               info('Creating Python virtual environment with uv...');
-              venvResult = spawnSync('uv', ['venv', '--python', pyResult.bin, venvPath], { stdio: 'pipe' });
+              venvResult = spawnSync('uv', ['venv', '--python', pyResult.bin, venvDir], { stdio: 'pipe' });
             } else {
               info('Creating Python virtual environment...');
-              venvResult = spawnSync(pyResult.bin, ['-m', 'venv', venvPath], { stdio: 'pipe' });
+              venvResult = spawnSync(pyResult.bin, ['-m', 'venv', venvDir], { stdio: 'pipe' });
             }
             if (venvResult.status === 0) {
               ok('Virtual environment created');
@@ -493,7 +493,8 @@ async function main() {
                 info(`  ${pyResult.bin} -m venv warroom/.venv`);
               }
               if (PLATFORM === 'win32') {
-                info('  warroom\\.venv\\Scripts\\activate');
+                info('  In PowerShell:     .\\warroom\\.venv\\Scripts\\Activate.ps1');
+                info('  In Command Prompt: warroom\\.venv\\Scripts\\activate.bat');
               } else {
                 info('  source warroom/.venv/bin/activate');
               }
@@ -517,7 +518,7 @@ async function main() {
               info('Installing War Room dependencies (this may take ~60 seconds)...');
               console.log();
               pipResult = spawnSync(
-                path.join(PROJECT_ROOT, 'warroom', '.venv', venvBinDir, PLATFORM === 'win32' ? 'pip.exe' : 'pip'),
+                getVenvPip(venvDir),
                 ['install', '-r', reqsFile],
                 { stdio: 'inherit', timeout: 300000 },
               );
@@ -532,10 +533,13 @@ async function main() {
               console.log();
               console.log(`  ${c.cyan}cd ${PROJECT_ROOT}${c.reset}`);
               if (hasUv) {
-                console.log(`  ${c.cyan}uv pip install --python warroom/.venv/${venvBinDir}/python -r warroom/requirements.txt${c.reset}`);
+                console.log(`  ${c.cyan}uv pip install --python ${venvPython} -r warroom/requirements.txt${c.reset}`);
               } else {
                 if (PLATFORM === 'win32') {
-                  console.log(`  ${c.cyan}warroom\\.venv\\Scripts\\activate${c.reset}`);
+                  console.log(`  ${c.cyan}# In PowerShell:${c.reset}`);
+                  console.log(`  ${c.cyan}.\\warroom\\.venv\\Scripts\\Activate.ps1${c.reset}`);
+                  console.log(`  ${c.cyan}# Or in Command Prompt:${c.reset}`);
+                  console.log(`  ${c.cyan}warroom\\.venv\\Scripts\\activate.bat${c.reset}`);
                 } else {
                   console.log(`  ${c.cyan}source warroom/.venv/bin/activate${c.reset}`);
                 }
@@ -1246,7 +1250,7 @@ async function main() {
     console.log();
     // Rebuild to ensure dist/ matches current source
     info('Building...');
-    const buildResult = spawnSync('npm', ['run', 'build'], { cwd: PROJECT_ROOT, stdio: 'inherit', shell: true });
+    const buildResult = spawnSync('npm', ['run', 'build'], { cwd: PROJECT_ROOT, stdio: 'inherit', shell: PLATFORM === 'win32' });
     if (buildResult.status !== 0) {
       warn('Build failed. Run npm run build to see errors, then npm start.');
     } else {
@@ -1257,7 +1261,7 @@ async function main() {
       // Close readline before handing off to the bot process
       rl.close();
       try {
-        execSync('npm start', { stdio: 'inherit', cwd: PROJECT_ROOT, shell: true });
+        execSync('npm start', { stdio: 'inherit', cwd: PROJECT_ROOT });
       } catch {
         // User hit Ctrl+C or process exited
       }
