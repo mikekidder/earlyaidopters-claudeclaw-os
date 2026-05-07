@@ -1,6 +1,7 @@
 import { CronExpressionParser } from 'cron-parser';
 
 import { AGENT_ID, ALLOWED_CHAT_ID, agentMcpAllowlist, agentDefaultModel } from './config.js';
+import { ingestConversationTurn } from './memory-ingest.js';
 import {
   getDueTasks,
   getSession,
@@ -114,6 +115,15 @@ async function runDueTasks(): Promise<void> {
           logConversationTurn(ALLOWED_CHAT_ID, 'assistant', text, activeSession ?? undefined, schedulerAgentId);
         }
 
+        // Fire-and-forget memory extraction. Synthetic chat_id when this agent has no
+        // user-facing Telegram chat (specialists usually don't). Memory is valuable
+        // even on background tasks — they produce content worth remembering, just
+        // grouped under a per-agent synthetic thread instead of a real user chat.
+        const ingestChatId = ALLOWED_CHAT_ID || `scheduled-${schedulerAgentId}`;
+        void ingestConversationTurn(ingestChatId, `[Scheduled task]: ${task.prompt}`, text, schedulerAgentId).catch((err) => {
+          logger.error({ err, taskId: task.id }, 'Memory ingestion fire-and-forget failed (scheduled task)');
+        });
+
         updateTaskAfterRun(task.id, nextRun, text, 'success');
 
         logger.info({ taskId: task.id, nextRun }, 'Task complete, next run scheduled');
@@ -201,6 +211,14 @@ async function runDueMissionTasks(): Promise<void> {
           logConversationTurn(ALLOWED_CHAT_ID, 'user', '[Mission task: ' + mission.title + ']: ' + mission.prompt, activeSession ?? undefined, schedulerAgentId);
           logConversationTurn(ALLOWED_CHAT_ID, 'assistant', text, activeSession ?? undefined, schedulerAgentId);
         }
+
+        // Fire-and-forget memory extraction. Synthetic chat_id when this agent has no
+        // user-facing Telegram chat (specialists usually don't). Mission tasks produce
+        // content worth remembering, grouped under a per-agent synthetic thread.
+        const ingestChatId = ALLOWED_CHAT_ID || `mission-${schedulerAgentId}`;
+        void ingestConversationTurn(ingestChatId, '[Mission task: ' + mission.title + ']: ' + mission.prompt, text, schedulerAgentId).catch((err) => {
+          logger.error({ err, missionId: mission.id }, 'Memory ingestion fire-and-forget failed (mission task)');
+        });
       }
     } catch (err) {
       clearTimeout(timeout);
