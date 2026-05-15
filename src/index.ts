@@ -47,28 +47,36 @@ if (AGENT_ID !== 'main') {
   });
   logger.info({ agentId: AGENT_ID, name: agentConfig.name }, 'Running as agent');
 } else {
-  // For main bot: read CLAUDE.md from CLAUDECLAW_CONFIG and inject it as
-  // systemPrompt — the same pattern used by sub-agents. Never copy the file
-  // into the repo; that defeats the purpose of CLAUDECLAW_CONFIG and risks
-  // accidentally committing personal config.
-  const externalClaudeMd = path.join(CLAUDECLAW_CONFIG, 'CLAUDE.md');
-  if (fs.existsSync(externalClaudeMd)) {
+  // Main bot follows the same pattern as sub-agents: load CLAUDE.md from
+  // CLAUDECLAW_CONFIG/agents/main/ and set CWD to that directory so the
+  // Claude SDK loads the personal CLAUDE.md (not the repo template).
+  // Falls back to CLAUDECLAW_CONFIG/CLAUDE.md for backward compatibility.
+  const agentClaudeMd = resolveAgentClaudeMd('main');
+  const rootClaudeMd = path.join(CLAUDECLAW_CONFIG, 'CLAUDE.md');
+  const claudeMdSource = agentClaudeMd ?? (fs.existsSync(rootClaudeMd) ? rootClaudeMd : null);
+
+  // Use the agent dir as CWD when a personal CLAUDE.md exists there.
+  // This prevents the SDK from loading the repo's template CLAUDE.md
+  // (which is gone — only CLAUDE.md.example ships in the repo now).
+  const mainAgentDir = agentClaudeMd ? path.dirname(agentClaudeMd) : null;
+
+  if (claudeMdSource) {
     let systemPrompt: string | undefined;
     try {
-      systemPrompt = fs.readFileSync(externalClaudeMd, 'utf-8');
+      systemPrompt = fs.readFileSync(claudeMdSource, 'utf-8');
     } catch { /* unreadable */ }
     if (systemPrompt) {
       setAgentOverrides({
         agentId: 'main',
         botToken: activeBotToken,
-        cwd: PROJECT_ROOT,
+        cwd: mainAgentDir ?? PROJECT_ROOT,
         systemPrompt,
       });
-      logger.info({ source: externalClaudeMd }, 'Loaded CLAUDE.md from CLAUDECLAW_CONFIG');
+      logger.info({ source: claudeMdSource, cwd: mainAgentDir ?? PROJECT_ROOT }, 'Loaded main agent CLAUDE.md');
     }
-  } else if (!fs.existsSync(path.join(PROJECT_ROOT, 'CLAUDE.md'))) {
+  } else {
     logger.warn(
-      'No CLAUDE.md found. Copy CLAUDE.md.example to %s/CLAUDE.md and customize it.',
+      'No CLAUDE.md found. Copy CLAUDE.md.example to %s/agents/main/CLAUDE.md and customize it.',
       CLAUDECLAW_CONFIG,
     );
   }

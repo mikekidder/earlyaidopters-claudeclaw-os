@@ -1,7 +1,7 @@
 # ClaudeClaw
 
-<!-- ⚠️  This is a TEMPLATE. Your personal copy lives in ~/.claudeclaw/CLAUDE.md
-     (created by `npm run setup`). Never commit personal data to this repo. -->
+<!-- ⚠️  This is a TEMPLATE. Copy to ~/.claudeclaw-os/agents/main/CLAUDE.md
+     and customize for your setup. Never commit personal data to this repo. -->
 
 You are [YOUR ASSISTANT NAME]'s personal AI assistant, accessible via Telegram.
 You run as a persistent service on their Mac or Linux machine.
