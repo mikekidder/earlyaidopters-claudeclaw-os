@@ -245,7 +245,7 @@ async function main() {
 
   // Windows is fully supported. Offer WSL as a neutral alternative, default Yes to continue native.
   if (PLATFORM === 'win32') {
-    ok('Windows detected. Native Windows is fully supported (PM2 for auto-start).');
+    ok('Windows detected. Native Windows is fully supported (Task Scheduler for auto-start).');
     info('WSL2 is also available if you prefer a POSIX environment.');
     console.log();
     const continueNative = await confirm('Continue with native Windows?', true);
@@ -1389,41 +1389,22 @@ WantedBy=default.target
 async function setupWindows() {
   section('Auto-start (Windows)');
 
-  info('PM2 is the recommended way to keep ClaudeClaw running on Windows.');
-  info('It handles restart-on-crash, log rotation, and startup persistence.');
+  info('Windows Task Scheduler is the recommended way to auto-start ClaudeClaw.');
+  info('It runs at logon, requires no elevated privileges, and has no extra dependencies.');
   console.log();
 
-  // Check if PM2 is already installed
+  // Check if PM2 is already installed (offer as alternative for users who prefer it)
   let pm2Available = false;
   try {
     execSync('pm2 --version', { stdio: 'pipe' });
     pm2Available = true;
   } catch { /* not installed */ }
 
-  if (!pm2Available) {
-    info('PM2 is not installed. Install it globally first:');
-    console.log(`  ${c.cyan}npm install -g pm2${c.reset}`);
-    console.log();
-    const installPm2 = await confirm('Install PM2 now?', true);
-    if (installPm2) {
-      const s = spinner('Installing PM2...');
-      try {
-        execSync('npm install -g pm2', { stdio: 'pipe' });
-        pm2Available = true;
-        s.stop('ok', 'PM2 installed');
-      } catch (err) {
-        s.stop('warn', 'Could not install PM2 automatically');
-        const errMsg = err instanceof Error ? err.message : String(err);
-        info(`Error: ${errMsg}`);
-        info('Try running "npm install -g pm2" manually in an elevated terminal.');
-        console.log();
-      }
-    }
-  }
-
+  // If PM2 is already installed, offer it as an alternative
   if (pm2Available) {
-    const setupPm2 = await confirm('Set up PM2 to manage ClaudeClaw?', true);
-    if (setupPm2) {
+    info('PM2 detected. You can use PM2 instead if you prefer (restart-on-crash, log rotation).');
+    const usePm2 = await confirm('Use PM2 instead of Task Scheduler?', false);
+    if (usePm2) {
       const s = spinner('Configuring PM2...');
       try {
         const entry = path.join(PROJECT_ROOT, 'dist', 'index.js');
@@ -1437,7 +1418,7 @@ async function setupWindows() {
           { stdio: 'pipe' },
         );
 
-        // Save process list and set up startup
+        // Save process list
         execSync('pm2 save', { stdio: 'pipe' });
         s.stop('ok', 'ClaudeClaw is running under PM2');
 
@@ -1458,16 +1439,14 @@ async function setupWindows() {
         const errMsg = err instanceof Error ? err.message : String(err);
         info(`Error: ${errMsg}`);
         console.log();
-        info('Falling back to Task Scheduler option...');
+        info('Falling back to Task Scheduler...');
         console.log();
       }
     }
   }
 
-  // Fallback: Task Scheduler
-  info('Alternative: Windows Task Scheduler (runs at logon).');
-  console.log();
-  const installTask = await confirm('Install a Task Scheduler auto-start entry?', !pm2Available);
+  // Primary: Task Scheduler
+  const installTask = await confirm('Install a Task Scheduler auto-start entry?', true);
   if (!installTask) {
     info('Skipped. You can start the bot manually with: npm start');
     info('Or re-run "npm run setup" later to configure auto-start.');
